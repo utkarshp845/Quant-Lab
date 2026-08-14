@@ -1,4 +1,5 @@
 import type { BearPutSpreadRequest, BearPutSpreadResponse } from "../types/bearPutSpread";
+import type { MonteCarloRequest, MonteCarloResult } from "../types/monteCarlo";
 
 const API_BASE = "http://localhost:8000/api";
 
@@ -43,18 +44,16 @@ function formatValidationErrors(body: unknown): string[] {
   return [];
 }
 
-export async function analyzeBearPutSpread(
-  request: BearPutSpreadRequest,
-): Promise<BearPutSpreadResponse> {
-  const res = await fetch(`${API_BASE}/bear-put-spread`, {
+async function postJson<TResponse>(path: string, body: unknown): Promise<TResponse> {
+  const res = await fetch(`${API_BASE}${path}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(request),
+    body: JSON.stringify(body),
   });
 
   if (!res.ok) {
-    const body = await res.json().catch(() => null);
-    const details = formatValidationErrors(body);
+    const errorBody = await res.json().catch(() => null);
+    const details = formatValidationErrors(errorBody);
     throw new ApiError(
       details.length > 0 ? "Please fix the highlighted inputs." : "The server rejected this request.",
       details,
@@ -62,4 +61,12 @@ export async function analyzeBearPutSpread(
   }
 
   return res.json();
+}
+
+export function analyzeBearPutSpread(request: BearPutSpreadRequest): Promise<BearPutSpreadResponse> {
+  return postJson<BearPutSpreadResponse>("/bear-put-spread", request);
+}
+
+export function runMonteCarloSimulation(request: MonteCarloRequest): Promise<MonteCarloResult> {
+  return postJson<MonteCarloResult>("/bear-put-spread/monte-carlo", request);
 }

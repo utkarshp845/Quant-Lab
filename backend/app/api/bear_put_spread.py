@@ -11,9 +11,11 @@ top to bottom.
 from fastapi import APIRouter, HTTPException
 
 from app.calculations import bear_put_spread as calc
+from app.calculations import monte_carlo as mc
 from app.calculations import payoff_scenarios
 from app.calculations import probability_distribution as dist
 from app.models.bear_put_spread import BearPutSpreadRequest
+from app.models.monte_carlo import MonteCarloRequest, MonteCarloResult
 from app.models.response import (
     BearPutSpreadResponse,
     DebitBreakdown,
@@ -176,3 +178,52 @@ def payoff_at_price(request: PayoffAtPriceRequest) -> PayoffScenario:
         debit_share=debit_share,
     )
     return PayoffScenario(**result, is_profit=result["pl_per_share"] > 0)
+
+
+@router.post("/bear-put-spread/monte-carlo", response_model=MonteCarloResult)
+def monte_carlo_simulation(request: MonteCarloRequest) -> MonteCarloResult:
+    """Phase 3: simulate many random expiration prices and summarize the outcomes.
+
+    This is a separate, explicitly-triggered endpoint (not part of the
+    auto-recomputing main analysis) since a 100,000-path simulation is
+    too expensive to re-run on every keystroke. It reuses the exact
+    same debit/expected-move calculations as the main endpoint, then
+    hands off to app.calculations.monte_carlo for the random sampling.
+    """
+    underlying = request.underlying
+    long_put = request.long_put
+    short_put = request.short_put
+
+    debit_share = calc.debit_per_share(long_put.ask, short_put.bid)
+    avg_iv = calc.average_iv(long_put.iv, short_put.iv)
+    exp_move = calc.expected_move(underlying.price, avg_iv, underlying.dte)
+
+    # The Phase 2 closed-form EV, computed with the same bucket step
+    # convention used elsewhere, so the UI can show it side by side
+    # with the Monte Carlo estimate as a convergence / sanity check.
+    width = calc.strike_width(long_put.strike, short_put.strike)
+    try:
+        closed_form = dist.build_probability_distribution(
+            underlying_price=underlying.price,
+            expected_move=exp_move,
+            long_strike=long_put.strike,
+            short_strike=short_put.strike,
+            debit_share=debit_share,
+            step=max(1.0, round(width / 4)),
+        )
+        result = mc.run_simulation(
+            underlying_price=underlying.price,
+            expected_move=exp_move,
+            long_strike=long_put.strike,
+            short_strike=short_put.strike,
+            debit_share=debit_share,
+            num_simulations=request.num_simulations,
+            seed=request.seed,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    return MonteCarloResult(
+        **result,
+        closed_form_expected_value_per_contract=closed_form["expected_value_per_contract"],
+    )

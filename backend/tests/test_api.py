@@ -5,6 +5,7 @@ response) works together, on top of the unit tests that already cover
 each calculation in isolation.
 """
 
+import pytest
 from fastapi.testclient import TestClient
 
 from app.main import app
@@ -109,3 +110,48 @@ class TestPayoffAtPriceEndpoint:
         resp = client.post("/api/bear-put-spread/payoff-at-price", json=payload)
         data = resp.json()
         assert round(data["pl_per_contract"], 2) == 361.0
+
+
+class TestMonteCarloEndpoint:
+    def test_default_simulation_runs_and_returns_full_shape(self):
+        payload = {**GRADUATION_PAYLOAD, "num_simulations": 5000, "seed": 42}
+        resp = client.post("/api/bear-put-spread/monte-carlo", json=payload)
+        assert resp.status_code == 200
+        data = resp.json()
+
+        assert data["num_simulations"] == 5000
+        assert 0.0 <= data["probability_of_profit"] <= 1.0
+        assert len(data["sample_paths"]) == 10
+        assert len(data["histogram"]) > 0
+        # Closed-form EV should be included for comparison and should
+        # be in the same ballpark as the graduation-example figure.
+        assert round(data["closed_form_expected_value_per_contract"], 2) == pytest.approx(-69.77, abs=1.0)
+
+    def test_same_seed_is_reproducible_through_the_api(self):
+        payload = {**GRADUATION_PAYLOAD, "num_simulations": 2000, "seed": 99}
+        resp1 = client.post("/api/bear-put-spread/monte-carlo", json=payload)
+        resp2 = client.post("/api/bear-put-spread/monte-carlo", json=payload)
+        assert resp1.json()["expected_value_per_contract"] == resp2.json()["expected_value_per_contract"]
+
+    def test_too_few_simulations_rejected(self):
+        payload = {**GRADUATION_PAYLOAD, "num_simulations": 10}
+        resp = client.post("/api/bear-put-spread/monte-carlo", json=payload)
+        assert resp.status_code == 422
+
+    def test_zero_dte_returns_422_not_500(self):
+        payload = {
+            **GRADUATION_PAYLOAD,
+            "underlying": {**GRADUATION_PAYLOAD["underlying"], "dte": 0},
+            "num_simulations": 1000,
+        }
+        resp = client.post("/api/bear-put-spread/monte-carlo", json=payload)
+        assert resp.status_code == 422
+
+    def test_invalid_strike_ordering_rejected(self):
+        payload = {
+            **GRADUATION_PAYLOAD,
+            "long_put": {**GRADUATION_PAYLOAD["long_put"], "strike": 70},
+            "num_simulations": 1000,
+        }
+        resp = client.post("/api/bear-put-spread/monte-carlo", json=payload)
+        assert resp.status_code == 422
