@@ -21,6 +21,7 @@ from app.models.response import (
     DebitBreakdown,
     DeltaAnalysis,
     DistributionBucket,
+    ExecutionRealityCheck,
     PayoffScenario,
     ProbabilityAnalysis,
     ProbabilityDistribution,
@@ -38,15 +39,32 @@ def _analyze(request: BearPutSpreadRequest) -> BearPutSpreadResponse:
     short_put = request.short_put
 
     # --- Trade structure / cost -------------------------------------------------
-    debit_share = calc.debit_per_share(long_put.ask, short_put.bid)
+    # PRIMARY debit: mid-price based. This is what drives every
+    # calculation below (Risk/Reward, Probability, Monte Carlo) --
+    # see the module docstring in calculations/bear_put_spread.py.
+    long_mid = calc.mid_price(long_put.bid, long_put.ask)
+    short_mid = calc.mid_price(short_put.bid, short_put.ask)
+    debit_share = calc.debit_per_share(long_mid, short_mid)
     debit_contract = calc.debit_per_contract(debit_share)
 
-    # --- Risk / reward ------------------------------------------------------
+    # SECONDARY debit: conservative, ask/bid based. Used only for the
+    # Execution Reality Check below -- never feeds another calculation.
+    conservative_debit_share = calc.debit_per_share(long_put.ask, short_put.bid)
+    conservative_debit_contract = calc.debit_per_contract(conservative_debit_share)
+
+    # --- Risk / reward (mid-debit based) ---------------------------------------
     width = calc.strike_width(long_put.strike, short_put.strike)
     max_loss = calc.max_loss_per_contract(debit_share)
     max_profit_share = calc.max_profit_per_share(width, debit_share)
     max_profit_contract = calc.max_profit_per_contract(max_profit_share)
     breakeven = calc.breakeven_price(long_put.strike, debit_share)
+
+    # --- Execution Reality Check (conservative-debit based) ---------------------
+    conservative_max_loss = calc.max_loss_per_contract(conservative_debit_share)
+    conservative_max_profit_share = calc.max_profit_per_share(width, conservative_debit_share)
+    conservative_max_profit_contract = calc.max_profit_per_contract(conservative_max_profit_share)
+    conservative_breakeven = calc.breakeven_price(long_put.strike, conservative_debit_share)
+    slippage_cost = conservative_debit_contract - debit_contract
 
     # --- Delta ----------------------------------------------------------------
     net_delta = calc.spread_delta(long_put.delta, short_put.delta)
@@ -87,10 +105,24 @@ def _analyze(request: BearPutSpreadRequest) -> BearPutSpreadResponse:
 
     return BearPutSpreadResponse(
         debit=DebitBreakdown(
+            long_put_bid=long_put.bid,
             long_put_ask=long_put.ask,
+            long_put_mid=long_mid,
             short_put_bid=short_put.bid,
+            short_put_ask=short_put.ask,
+            short_put_mid=short_mid,
             debit_per_share=debit_share,
             debit_per_contract=debit_contract,
+        ),
+        execution_check=ExecutionRealityCheck(
+            long_put_ask=long_put.ask,
+            short_put_bid=short_put.bid,
+            conservative_debit_per_share=conservative_debit_share,
+            conservative_debit_per_contract=conservative_debit_contract,
+            conservative_max_loss_per_contract=conservative_max_loss,
+            conservative_max_profit_per_contract=conservative_max_profit_contract,
+            conservative_breakeven=conservative_breakeven,
+            slippage_cost_per_contract=slippage_cost,
         ),
         risk_reward=RiskReward(
             strike_width=width,
@@ -131,6 +163,7 @@ def _analyze(request: BearPutSpreadRequest) -> BearPutSpreadResponse:
             long_put_strike=long_put.strike,
             short_put_strike=short_put.strike,
             debit_per_contract=debit_contract,
+            conservative_debit_per_contract=conservative_debit_contract,
             max_loss_per_contract=max_loss,
             max_profit_per_contract=max_profit_contract,
             breakeven=breakeven,
@@ -168,9 +201,12 @@ def payoff_at_price(request: PayoffAtPriceRequest) -> PayoffScenario:
 
     This backs the "payoff calculator" section, where the user types
     in a hypothetical expiration price and sees the resulting P/L,
-    separate from the fixed scenario table.
+    separate from the fixed scenario table. Uses the primary (mid)
+    debit, matching every other calculation in this app.
     """
-    debit_share = calc.debit_per_share(request.long_put.ask, request.short_put.bid)
+    long_mid = calc.mid_price(request.long_put.bid, request.long_put.ask)
+    short_mid = calc.mid_price(request.short_put.bid, request.short_put.ask)
+    debit_share = calc.debit_per_share(long_mid, short_mid)
     result = calc.payoff_at_expiration(
         long_strike=request.long_put.strike,
         short_strike=request.short_put.strike,
@@ -187,14 +223,17 @@ def monte_carlo_simulation(request: MonteCarloRequest) -> MonteCarloResult:
     This is a separate, explicitly-triggered endpoint (not part of the
     auto-recomputing main analysis) since a 100,000-path simulation is
     too expensive to re-run on every keystroke. It reuses the exact
-    same debit/expected-move calculations as the main endpoint, then
-    hands off to app.calculations.monte_carlo for the random sampling.
+    same debit/expected-move calculations as the main endpoint (the
+    primary, mid-price debit), then hands off to
+    app.calculations.monte_carlo for the random sampling.
     """
     underlying = request.underlying
     long_put = request.long_put
     short_put = request.short_put
 
-    debit_share = calc.debit_per_share(long_put.ask, short_put.bid)
+    long_mid = calc.mid_price(long_put.bid, long_put.ask)
+    short_mid = calc.mid_price(short_put.bid, short_put.ask)
+    debit_share = calc.debit_per_share(long_mid, short_mid)
     avg_iv = calc.average_iv(long_put.iv, short_put.iv)
     exp_move = calc.expected_move(underlying.price, avg_iv, underlying.dte)
 

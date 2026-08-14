@@ -105,22 +105,36 @@ The calculator is pre-populated with this hypothetical setup on load:
 
 With the example inputs above, the app should show:
 
+**Primary analysis (Mid Debit — drives everything below):**
+
 | Metric | Value |
 |---|---|
-| Debit | $4.39 / share ($439.00 / contract) |
-| Max Loss | $439.00 |
-| Max Profit | $361.00 |
-| Breakeven | $80.61 |
+| Mid Debit | $4.27 / share ($427.00 / contract) |
+| Max Loss | $427.00 |
+| Max Profit | $373.00 |
+| Breakeven | $80.73 |
 | Spread Delta | -0.29 |
 | Average IV | 43% |
 | Expected Move | ≈ ±$10.11 |
-| Z-score of breakeven | ≈ -0.138 |
-| Approx. probability below breakeven | ≈ 44.5% |
-| Expected Value (Phase 2, simplified model) | ≈ -$69.77 / contract |
-| Expected Value (Phase 3, Monte Carlo, 100k sims) | ≈ -$69.77 / contract ± a few dollars, run-to-run |
+| Z-score of breakeven | ≈ -0.126 |
+| Approx. probability below breakeven | ≈ 45.0% |
+| Expected Value (Phase 2, simplified model) | ≈ -$57.77 / contract |
+| Expected Value (Phase 3, Monte Carlo, 100k sims) | ≈ -$57.77 / contract ± a few dollars, run-to-run |
+
+**Execution Reality Check (Conservative Entry Debit — the original spec's
+worked-example numbers, still exact, just relabeled):**
+
+| Metric | Value |
+|---|---|
+| Conservative Entry Debit | $4.39 / share ($439.00 / contract) |
+| Conservative Max Loss | $439.00 |
+| Conservative Max Profit | $361.00 |
+| Conservative Breakeven | $80.61 |
+| Slippage Cost vs. Mid | $12.00 / contract |
 
 These exact numbers are also encoded as automated tests — see
-`backend/tests/test_calculations.py::TestGraduationExample`,
+`backend/tests/test_calculations.py::TestGraduationExampleMidDebit` and
+`TestGraduationExampleConservativeDebit`,
 `backend/tests/test_probability_distribution.py`,
 `backend/tests/test_monte_carlo.py`, and
 `backend/tests/test_api.py::TestBearPutSpreadEndpoint::test_graduation_example_full_response`.
@@ -131,22 +145,45 @@ A **bear put spread** buys a put at a higher strike (the "long put") and
 sells a put at a lower strike (the "short put"), both with the same
 expiration. It profits if the underlying falls.
 
-**Debit.** We buy the long put at the **ask** (what a buyer pays) and sell
-the short put at the **bid** (what a seller receives):
+**Debit — computed two ways.** This app computes the debit twice, because
+the two conventions answer different questions:
 
 ```
-Debit = Long Put Ask − Short Put Bid
+Mid Price          = (Bid + Ask) / 2
+Mid Debit          = Long Put Mid − Short Put Mid       (PRIMARY)
+Conservative Debit = Long Put Ask − Short Put Bid       (execution check)
 ```
+
+**Mid Debit is the primary debit** — it drives every calculation below
+(Max Loss/Profit, Breakeven, the Probability Engine, Monte Carlo). It uses
+the midpoint of each leg's bid/ask, i.e. what the market is "really"
+quoting the spread at, ignoring the cost of actually crossing the spread.
+Use it for theoretical trade comparison, expected-value modeling, and
+comparing many candidate trades against each other.
+
+**Conservative Entry Debit** buys the long put at the **ask** (what a
+buyer must pay) and sells the short put at the **bid** (what a seller
+receives) — the worst realistic price if you had to cross the full
+bid/ask spread on both legs at once. It feeds a separate "Execution
+Reality Check" panel (conservative Max Loss/Profit/Breakeven, and a
+"Slippage Cost" — the extra amount the conservative debit costs versus
+the mid) and does **not** feed anything else in this app. Use it for
+realistic entry cost, conservative P/L, and checking whether the trade
+survives transaction costs and slippage.
+
+Both are the exact same formula (`long price − short price`) — see
+`backend/app/calculations/bear_put_spread.py::debit_per_share` — just fed
+different input prices.
 
 One option contract covers 100 shares, so the dollar cost is the debit
 times 100.
 
 **Max Loss.** A debit spread's worst case is losing the entire amount paid
 to enter it (if the underlying finishes at or above the long strike, both
-puts expire worthless):
+puts expire worthless). Uses the primary (Mid) Debit:
 
 ```
-Max Loss = Debit × 100
+Max Loss = Mid Debit × 100
 ```
 
 **Max Profit.** The spread's value is capped at the distance between the
@@ -155,7 +192,7 @@ below the short strike:
 
 ```
 Strike Width = Long Strike − Short Strike
-Max Profit = (Strike Width − Debit) × 100
+Max Profit = (Strike Width − Mid Debit) × 100
 ```
 
 **Breakeven.** Between the strikes, the spread's value at expiration equals
@@ -163,7 +200,7 @@ Max Profit = (Strike Width − Debit) × 100
 solving for price gives:
 
 ```
-Breakeven = Long Strike − Debit
+Breakeven = Long Strike − Mid Debit
 ```
 
 **Spread Delta.** Put deltas are negative. Selling the short put means we
@@ -226,7 +263,7 @@ shape — see `backend/app/calculations/payoff_scenarios.py`.
 ### Phase 2 — the probability engine
 
 Section 6 above collapses the whole distribution of possible outcomes into
-one number ("44.5% probability of finishing below breakeven"). Phase 2
+one number ("45.0% probability of finishing below breakeven"). Phase 2
 builds the actual distribution instead, in
 `backend/app/calculations/probability_distribution.py`:
 
@@ -262,10 +299,10 @@ P/L across every bucket:
 EV = Σ P(bucket_i) × P/L(bucket_i)
 ```
 
-For the graduation example this comes out to **≈ -$69.77 per contract** —
-a useful, slightly counter-intuitive lesson: a 44.5% chance of finishing
+For the graduation example this comes out to **≈ -$57.77 per contract** —
+a useful, slightly counter-intuitive lesson: a 45.0% chance of finishing
 profitable does **not** imply positive EV, because the profit and loss
-magnitudes here aren't symmetric (capped at +$361 one way, -$439 the
+magnitudes here aren't symmetric (capped at +$373 one way, -$427 the
 other).
 
 **Why this EV is not a trading edge.** It's computed under the exact same
@@ -337,8 +374,8 @@ already in place and already tested.
 
 **Labeling discipline.** Every number in this section is a property of N
 random draws under a simplified model — not a fact about the real market.
-The UI states results as *"Based on the assumptions of this model, 44.3%
-of 100,000 simulated outcomes were profitable"* — never *"there's a 44%
+The UI states results as *"Based on the assumptions of this model, 45.1%
+of 100,000 simulated outcomes were profitable"* — never *"there's a 45%
 chance of profit."*
 
 ## 9. Financial assumptions

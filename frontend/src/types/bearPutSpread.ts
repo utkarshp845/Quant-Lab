@@ -23,12 +23,37 @@ export interface BearPutSpreadRequest {
   short_put: OptionLegInput;
 }
 
+/** The PRIMARY debit (mid-price based) -- drives every downstream
+ * calculation in this app. See ExecutionRealityCheck for the separate,
+ * deliberately-pessimistic ask/bid-based debit. */
 export interface DebitBreakdown {
+  long_put_bid: number;
   long_put_ask: number;
+  long_put_mid: number;
   short_put_bid: number;
+  short_put_ask: number;
+  short_put_mid: number;
   debit_per_share: number;
   debit_per_contract: number;
+  formula_mid_price: string;
   formula: string;
+}
+
+/** A deliberately pessimistic, ask/bid-based view of the same trade,
+ * for judging realistic entry cost and whether the trade survives the
+ * cost of crossing the bid/ask spread. Does not feed any other
+ * calculation in this app. */
+export interface ExecutionRealityCheck {
+  long_put_ask: number;
+  short_put_bid: number;
+  conservative_debit_per_share: number;
+  conservative_debit_per_contract: number;
+  conservative_max_loss_per_contract: number;
+  conservative_max_profit_per_contract: number;
+  conservative_breakeven: number;
+  slippage_cost_per_contract: number;
+  formula_debit: string;
+  formula_slippage: string;
 }
 
 export interface RiskReward {
@@ -108,6 +133,7 @@ export interface TradeSummary {
   long_put_strike: number;
   short_put_strike: number;
   debit_per_contract: number;
+  conservative_debit_per_contract: number;
   max_loss_per_contract: number;
   max_profit_per_contract: number;
   breakeven: number;
@@ -120,6 +146,7 @@ export interface TradeSummary {
 
 export interface BearPutSpreadResponse {
   debit: DebitBreakdown;
+  execution_check: ExecutionRealityCheck;
   risk_reward: RiskReward;
   delta: DeltaAnalysis;
   volatility: VolatilityAnalysis;
