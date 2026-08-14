@@ -1,9 +1,14 @@
+import { CsvImportWorkflow } from "./CsvImportWorkflow";
 import type { BearPutSpreadFormState, OptionLegFormState, UnderlyingFormState } from "../types/form";
+
+export type InputMode = "manual" | "csv";
 
 interface InputsPanelProps {
   form: BearPutSpreadFormState;
   onChange: (form: BearPutSpreadFormState) => void;
   fieldErrors?: string[];
+  mode: InputMode;
+  onModeChange: (mode: InputMode) => void;
 }
 
 function NumberField({
@@ -99,43 +104,77 @@ function OptionLegFields({
   );
 }
 
-export function InputsPanel({ form, onChange, fieldErrors }: InputsPanelProps) {
+export function InputsPanel({ form, onChange, fieldErrors, mode, onModeChange }: InputsPanelProps) {
   return (
     <section className="section">
       <h2 className="section-title">1. Inputs</h2>
       <p className="section-subtitle">
-        Enter the underlying and both option legs manually, exactly as you see them on your
-        broker's option chain. Nothing here is fetched automatically.
+        {mode === "manual"
+          ? "Enter the underlying and both option legs manually, exactly as you see them on your broker's option chain. Nothing here is fetched automatically."
+          : "Upload a CSV export of an options chain (e.g. from Thinkorswim), then pick the long and short put to analyze. This only reads the file you choose -- nothing is fetched automatically."}
       </p>
-      <div className="inputs-grid">
-        <UnderlyingFields
-          value={form.underlying}
-          onChange={(underlying) => onChange({ ...form, underlying })}
-        />
-        <OptionLegFields
-          title="Long Put"
-          action="BUY"
-          accentClass="accent-buy"
-          value={form.longPut}
-          onChange={(longPut) => onChange({ ...form, longPut })}
-        />
-        <OptionLegFields
-          title="Short Put"
-          action="SELL"
-          accentClass="accent-sell"
-          value={form.shortPut}
-          onChange={(shortPut) => onChange({ ...form, shortPut })}
-        />
+
+      <div className="input-mode-toggle" role="tablist" aria-label="Input method">
+        <button
+          type="button"
+          role="tab"
+          aria-selected={mode === "manual"}
+          className={mode === "manual" ? "mode-tab mode-tab-active" : "mode-tab"}
+          onClick={() => onModeChange("manual")}
+        >
+          Manual Entry
+        </button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={mode === "csv"}
+          className={mode === "csv" ? "mode-tab mode-tab-active" : "mode-tab"}
+          onClick={() => onModeChange("csv")}
+        >
+          Import CSV
+        </button>
       </div>
-      {fieldErrors && fieldErrors.length > 0 && (
-        <div className="error-banner">
-          <strong>Please fix the following:</strong>
-          <ul>
-            {fieldErrors.map((err) => (
-              <li key={err}>{err}</li>
-            ))}
-          </ul>
-        </div>
+
+      {mode === "manual" ? (
+        <>
+          <div className="inputs-grid">
+            <UnderlyingFields
+              value={form.underlying}
+              onChange={(underlying) => onChange({ ...form, underlying })}
+            />
+            <OptionLegFields
+              title="Long Put"
+              action="BUY"
+              accentClass="accent-buy"
+              value={form.longPut}
+              onChange={(longPut) => onChange({ ...form, longPut })}
+            />
+            <OptionLegFields
+              title="Short Put"
+              action="SELL"
+              accentClass="accent-sell"
+              value={form.shortPut}
+              onChange={(shortPut) => onChange({ ...form, shortPut })}
+            />
+          </div>
+          {fieldErrors && fieldErrors.length > 0 && (
+            <div className="error-banner">
+              <strong>Please fix the following:</strong>
+              <ul>
+                {fieldErrors.map((err) => (
+                  <li key={err}>{err}</li>
+                ))}
+              </ul>
+            </div>
+          )}
+        </>
+      ) : (
+        <CsvImportWorkflow
+          onApply={(formState) => {
+            onChange(formState);
+            onModeChange("manual");
+          }}
+        />
       )}
     </section>
   );

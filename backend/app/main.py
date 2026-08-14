@@ -10,6 +10,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.bear_put_spread import router as bear_put_spread_router
+from app.api.csv_import import router as csv_import_router
 
 app = FastAPI(
     title="Pandey Quant Lab API",
@@ -35,6 +36,7 @@ app.add_middleware(
 )
 
 app.include_router(bear_put_spread_router, prefix="/api")
+app.include_router(csv_import_router, prefix="/api")
 
 
 @app.get("/api/health")

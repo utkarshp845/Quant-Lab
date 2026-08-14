@@ -23,7 +23,11 @@ spreadsheet — but with every step shown, not hidden behind a single
 ## 2. What it does
 
 - Lets you manually enter an underlying (symbol, price, DTE) and two put
-  legs (a long put you buy, a short put you sell).
+  legs (a long put you buy, a short put you sell) -- or **(v0.1.1) import
+  a CSV export of an options chain** and pick the two legs from a table
+  instead of typing them in. See
+  [12. Importing options data from CSV](#12-importing-options-data-from-csv-v011)
+  below.
 - Computes, and shows the formula for: debit, max loss, max profit,
   breakeven, net spread delta, average IV, expected 1-standard-deviation
   move, a z-score, and an approximate probability of finishing below
@@ -517,6 +521,84 @@ project has been building toward. At this point the biggest risk to a
 trader using this tool may not be market direction at all, but
 overconfidence in the model's own probability estimates.
 
+## 12. Importing options data from CSV (v0.1.1)
+
+Manual entry works fine for one spread at a time, but typing in a whole
+option chain by hand doesn't. v0.1.1 adds a second way to fill in the same
+inputs: upload a CSV export of an options chain, pick a long and short
+put from a table, and click "Analyze Spread." **This is a data-entry
+convenience, not a new data source or a scanner** — nothing is fetched
+automatically, no network call happens except reading the file you chose,
+and the file never leaves your machine except to your own local backend.
+
+**Workflow:** Upload CSV → select expiration → select long put → select
+short put → Analyze Spread. Clicking Analyze Spread populates the exact
+same manual-entry form fields the rest of the app already uses (see
+`frontend/src/components/CsvImportWorkflow.tsx::optionToFormState`) and
+switches back to the Manual Entry tab, pre-filled and still editable —
+from that point on, CSV-derived and hand-typed inputs are indistinguishable
+to the rest of the app. **No financial formula is duplicated anywhere in
+this feature**: the CSV pipeline's only job is producing a normal
+`BearPutSpreadRequest`, which is posted to the exact same
+`/api/bear-put-spread` endpoint manual entry already used. A dedicated
+test (`test_csv_import_api.py::test_csv_derived_request_matches_manual_entry`)
+asserts the two response bodies are byte-for-byte identical.
+
+**The normalized model.** Regardless of the CSV's column names, every row
+is normalized into one shape (`backend/app/models/option_chain.py`):
+`symbol, underlying_price, expiration, dte, strike, option_type, bid, ask,
+last, volume, open_interest, implied_volatility, delta, gamma, theta,
+vega`. This model is deliberately kept separate from the CSV parser
+(`backend/app/ingestion/`) — it is the same "Normalized Chain" concept the
+Phase 4 roadmap diagram above describes, so a future data source (a
+different broker's export, eventually a live API) only needs to produce
+this same shape, not change anything downstream of it.
+
+**Required vs. optional columns.** A CSV needs recognizable columns for:
+`symbol, underlying price, expiration, strike, option type, bid, ask,
+delta, implied volatility`. Without every one of those, the whole file is
+rejected with a message naming exactly which column(s) are missing — never
+silently defaulted. `last, volume, open interest, gamma, theta, vega` are
+optional and become `null` when absent. Column names are matched
+case-insensitively against a small alias list per field (see
+`backend/app/ingestion/column_mapping.py`) — e.g. `implied_volatility`
+matches "Impl Vol", "IV", or "Implied Volatility".
+
+Beyond the column-level check, each **row** is validated independently
+(bid/ask ≥ 0, ask ≥ bid, strike > 0, underlying price > 0, IV ≥ 0, put
+delta in [-1, 0] / call delta in [0, 1], a parseable expiration date). A
+row that fails is skipped and reported in a row-level error list with its
+line number and reason; the rest of the file still imports. Selecting a
+long/short pair with the wrong strike ordering is caught by the exact same
+`BearPutSpreadRequest` validator manual entry already used (see section 3
+above) — there is no separate copy of that check for the CSV path.
+
+**Assumed CSV format.** This app has not been validated against a live
+Thinkorswim export (no verified sample was available while building it),
+so the column-name aliases and a few parsing rules below are documented
+*assumptions*, not a confirmed spec:
+- One row per contract ("tidy"/long format), not the mirrored
+  call-columns/strike/put-columns layout some chain UIs display on screen.
+- Implied volatility may be written as a percentage ("44.00%"), a
+  percentage-scale number without the sign ("44.00"), or an already-decimal
+  fraction ("0.44") — a value greater than 1.5 with no `%` sign is assumed
+  to be percentage-scale and divided by 100.
+- Expiration dates are tried against several common formats (`YYYY-MM-DD`,
+  `MM/DD/YYYY`, `DD-Mon-YYYY`, etc.), including stripping a
+  Thinkorswim-style trailing `"(35)"` DTE annotation (e.g. `"18 SEP 26
+  (35)"`) before parsing the date itself.
+- DTE is always computed from the expiration date and today's date on the
+  server — a DTE column in the file, if present, is ignored (so results
+  stay correct no matter when you import an old export).
+- A sample file matching these assumptions is at
+  `backend/tests/fixtures/sample_thinkorswim_chain.csv`.
+
+**What this is not.** No live market data, no brokerage connection, no
+scraping, no automatic scanning across symbols, no trade recommendations,
+no execution, no database (nothing from an uploaded file is persisted —
+re-uploading is required each session), no Monte Carlo/backtesting changes.
+This is strictly CSV → normalized options data → the existing calculator.
+
 ---
 
 ## Project structure
@@ -529,33 +611,45 @@ backend/
       bear_put_spread.py           Input models + validation
       response.py                  Response models (formulas embedded)
       monte_carlo.py               Phase 3: simulation request/response models
+      option_chain.py              v0.1.1: NormalizedOption + CSV import response models
     calculations/
       stats.py                     normal_cdf
       bear_put_spread.py           All core formulas, one function each
       payoff_scenarios.py          Payoff table / chart point generation
       probability_distribution.py  Phase 2: bucketed probability distribution + EV
       monte_carlo.py               Phase 3: random simulation, percentiles, histogram
+    ingestion/                     v0.1.1: CSV parsing, kept separate from the normalized model
+      column_mapping.py            Broker-style column-name aliases -> normalized fields
+      value_parsing.py             Per-cell parsers (float/int/IV/option-type/date), never fabricate
+      csv_normalizer.py            Row-by-row validation -> NormalizedOption dicts + row errors
     api/
       bear_put_spread.py           Route handlers, calls calculations in sequence
+      csv_import.py                v0.1.1: upload -> normalize -> return chain (no analysis math)
   tests/
     test_calculations.py           Pure-function unit tests + graduation example
     test_validation.py             Input validation tests
     test_api.py                    End-to-end API tests
     test_probability_distribution.py  Phase 2: bucket probabilities, EV, tails sum to 1.0
     test_monte_carlo.py            Phase 3: reproducibility, percentile ordering, convergence
+    test_csv_import.py             v0.1.1: column mapping, value parsing, row validation
+    test_csv_import_api.py         v0.1.1: upload endpoint + CSV-vs-manual-entry equivalence
+    fixtures/sample_thinkorswim_chain.csv  v0.1.1: example chain export
   requirements.txt
   pytest.ini
 frontend/
   src/
     types/                         TS types mirroring backend schemas
+      csvImport.ts                 v0.1.1: NormalizedOption / CsvImportResponse types
     calculations/                  TS mirror of the backend formulas
-    api/client.ts                  Fetch wrapper + error formatting
+    api/client.ts                  Fetch wrapper + error formatting + importCsv()
     components/                    One component per UI section
       DistributionChart.tsx        Phase 2: probability histogram + payoff line, combined
       DistributionTable.tsx        Phase 2: full bucket table
       ProbabilityEngineSection.tsx Phase 2: section wrapper, EV formula + disclaimer
       MonteCarloSection.tsx        Phase 3: run controls, stats, percentiles, sample paths
       MonteCarloHistogramChart.tsx Phase 3: empirical outcome histogram
+      CsvImportWorkflow.tsx        v0.1.1: upload -> select -> Analyze Spread
+      OptionChainTable.tsx         v0.1.1: chain table with call/put filter + long/short selection
     pages/CalculatorPage.tsx       Composes the page, owns form state
     App.tsx, main.tsx, index.css
 ```
