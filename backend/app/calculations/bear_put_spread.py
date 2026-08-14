@@ -1,8 +1,8 @@
 """Pure calculation functions for a bear put (debit put) spread.
 
 A bear put spread is built by:
-  - BUYING a put at a higher strike (the "long put"), paid at the ASK.
-  - SELLING a put at a lower strike (the "short put"), received at the BID.
+  - BUYING a put at a higher strike (the "long put").
+  - SELLING a put at a lower strike (the "short put").
 
 Every function here does exactly one small, named calculation and has
 a docstring stating the formula in plain terms. Nothing here reaches
@@ -15,6 +15,25 @@ All "per share" values are option-contract-style dollars per share of
 the underlying. Multiply by CONTRACT_MULTIPLIER to get per-contract
 (i.e. per 100 shares) dollar values, since one equity option contract
 covers 100 shares.
+
+TWO DEBITS: this app computes the debit two different ways, because
+they answer two different questions:
+
+  - MID DEBIT (long mid price - short mid price) is what the market is
+    "really" quoting the spread at, ignoring the bid/ask spread. It is
+    the PRIMARY debit used throughout this app -- it drives Max
+    Loss/Profit, Breakeven, the Probability Engine, and Monte Carlo --
+    because it is the right number for theoretical comparison, EV
+    modeling, and comparing many candidate trades against each other.
+  - CONSERVATIVE ENTRY DEBIT (long ask - short bid) is what you would
+    actually pay if you had to cross the full bid/ask spread on both
+    legs at once. It is deliberately pessimistic, used only for the
+    "Execution Reality Check": a realistic worst-case entry cost, and
+    whether the trade still makes sense after slippage.
+
+Both are computed with the exact same `debit_per_share` formula below,
+just fed different input prices -- the formula itself does not care
+which convention its two inputs came from.
 """
 
 import math
@@ -29,14 +48,27 @@ CONTRACT_MULTIPLIER = 100
 # ---------------------------------------------------------------------------
 
 
-def debit_per_share(long_put_ask: float, short_put_bid: float) -> float:
-    """Debit (per share) = Long Put Ask - Short Put Bid.
+def mid_price(bid: float, ask: float) -> float:
+    """Mid Price = (Bid + Ask) / 2.
 
-    We buy the long put at the ask (what a buyer must pay) and sell
-    the short put at the bid (what a seller receives), so the net cost
-    to enter the spread is the difference between those two prices.
+    The midpoint between the quoted bid and ask -- a common stand-in
+    for "fair value" when no trade has actually happened yet.
     """
-    return long_put_ask - short_put_bid
+    return (bid + ask) / 2.0
+
+
+def debit_per_share(long_put_price: float, short_put_price: float) -> float:
+    """Debit (per share) = Long Put Price - Short Put Price.
+
+    We buy the long put and sell the short put, so the net cost to
+    enter the spread is the difference between whatever two prices are
+    passed in. This app calls this same formula twice, with two
+    different price conventions -- see the module docstring above:
+
+        Mid Debit         = debit_per_share(long_mid, short_mid)
+        Conservative Debit = debit_per_share(long_ask, short_bid)
+    """
+    return long_put_price - short_put_price
 
 
 def debit_per_contract(debit_share: float) -> float:

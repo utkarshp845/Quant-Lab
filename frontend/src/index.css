@@ -227,6 +227,40 @@ body {
   margin-top: 4px;
 }
 
+/* ---------- Execution reality check ---------- */
+
+.execution-check-panel {
+  background: #fbfaff;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  padding: 14px;
+}
+
+.exec-check-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 10px 20px;
+  margin: 10px 0;
+}
+
+@media (max-width: 640px) {
+  .exec-check-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.exec-check-label {
+  display: block;
+  font-size: 0.78rem;
+  color: var(--color-text-muted);
+}
+
+.exec-check-value {
+  display: block;
+  font-size: 1.05rem;
+  font-weight: 700;
+}
+
 /* ---------- Metrics ---------- */
 
 .metric-block {
@@ -590,6 +624,124 @@ body {
   font-weight: 600;
   color: var(--color-text-muted);
   margin-bottom: 10px;
+}
+
+/* ---------- Monte Carlo section ---------- */
+
+.mc-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 18px;
+}
+
+.mc-sim-count-group {
+  display: inline-flex;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.mc-count-btn {
+  background: var(--color-surface);
+  border: none;
+  border-right: 1px solid var(--color-border);
+  padding: 8px 14px;
+  font-size: 0.85rem;
+  cursor: pointer;
+  color: var(--color-text-muted);
+}
+
+.mc-count-btn:last-child {
+  border-right: none;
+}
+
+.mc-count-btn-active {
+  background: var(--color-accent);
+  color: white;
+  font-weight: 600;
+}
+
+.mc-run-btn {
+  background: var(--color-accent);
+  color: white;
+  border: none;
+  border-radius: 8px;
+  padding: 9px 18px;
+  font-size: 0.88rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.mc-run-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.mc-headline {
+  font-size: 1rem;
+  margin-bottom: 2px;
+}
+
+.mc-stat-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 14px;
+  margin: 16px 0;
+}
+
+@media (max-width: 780px) {
+  .mc-stat-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.mc-stat-card {
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  padding: 12px 14px;
+}
+
+.mc-stat-label {
+  font-size: 0.82rem;
+  color: var(--color-text-muted);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 6px;
+}
+
+.mc-stat-value {
+  font-size: 1.4rem;
+  font-weight: 700;
+}
+
+.mc-ev-compare {
+  display: flex;
+  gap: 24px;
+  flex-wrap: wrap;
+  margin-bottom: 10px;
+}
+
+.mc-ev-label {
+  display: block;
+  font-size: 0.78rem;
+  color: var(--color-text-muted);
+}
+
+.mc-ev-value {
+  display: block;
+  font-size: 1.3rem;
+  font-weight: 700;
+}
+
+.mc-gain-loss-row {
+  display: flex;
+  gap: 24px;
+  flex-wrap: wrap;
+  font-size: 0.88rem;
+  margin-top: 8px;
 }
 
 /* ---------- Trade summary ---------- */

@@ -36,8 +36,12 @@ export function TradeSummary({ data }: TradeSummaryProps) {
           <strong>${summary.short_put_strike} strike</strong>
         </div>
         <div className="summary-row">
-          <span>Debit</span>
+          <span>Debit (Mid, primary)</span>
           <strong>{fmtUsd(summary.debit_per_contract)}</strong>
+        </div>
+        <div className="summary-row">
+          <span>Conservative Entry Debit</span>
+          <strong>{fmtUsd(summary.conservative_debit_per_contract)}</strong>
         </div>
         <div className="summary-row">
           <span>Max Loss</span>

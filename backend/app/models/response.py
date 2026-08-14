@@ -11,11 +11,39 @@ from pydantic import BaseModel
 
 
 class DebitBreakdown(BaseModel):
+    """The PRIMARY debit (mid-price based) -- drives every downstream
+    calculation in this app (Risk/Reward, Probability Engine, Monte
+    Carlo, Trade Summary). See ExecutionRealityCheck for the separate,
+    deliberately-pessimistic ask/bid-based debit."""
+
+    long_put_bid: float
     long_put_ask: float
+    long_put_mid: float
     short_put_bid: float
+    short_put_ask: float
+    short_put_mid: float
     debit_per_share: float
     debit_per_contract: float
-    formula: str = "Debit = Long Put Ask - Short Put Bid"
+    formula_mid_price: str = "Mid Price = (Bid + Ask) / 2"
+    formula: str = "Mid Debit = Long Put Mid - Short Put Mid"
+
+
+class ExecutionRealityCheck(BaseModel):
+    """A deliberately pessimistic, ask/bid-based view of the same trade,
+    for judging realistic entry cost and whether the trade survives
+    the cost of actually crossing the bid/ask spread on both legs.
+    Does not feed any other calculation in this app."""
+
+    long_put_ask: float
+    short_put_bid: float
+    conservative_debit_per_share: float
+    conservative_debit_per_contract: float
+    conservative_max_loss_per_contract: float
+    conservative_max_profit_per_contract: float
+    conservative_breakeven: float
+    slippage_cost_per_contract: float
+    formula_debit: str = "Conservative Entry Debit = Long Put Ask - Short Put Bid"
+    formula_slippage: str = "Slippage Cost = (Conservative Entry Debit - Mid Debit) x 100"
 
 
 class RiskReward(BaseModel):
@@ -25,9 +53,9 @@ class RiskReward(BaseModel):
     max_profit_per_contract: float
     breakeven: float
     formula_strike_width: str = "Strike Width = Long Put Strike - Short Put Strike"
-    formula_max_loss: str = "Max Loss = Debit x 100"
-    formula_max_profit: str = "Max Profit = (Strike Width - Debit) x 100"
-    formula_breakeven: str = "Breakeven = Long Put Strike - Debit"
+    formula_max_loss: str = "Max Loss = Mid Debit x 100"
+    formula_max_profit: str = "Max Profit = (Strike Width - Mid Debit) x 100"
+    formula_breakeven: str = "Breakeven = Long Put Strike - Mid Debit"
 
 
 class DeltaAnalysis(BaseModel):
@@ -96,6 +124,7 @@ class TradeSummary(BaseModel):
     long_put_strike: float
     short_put_strike: float
     debit_per_contract: float
+    conservative_debit_per_contract: float
     max_loss_per_contract: float
     max_profit_per_contract: float
     breakeven: float
@@ -108,6 +137,7 @@ class TradeSummary(BaseModel):
 
 class BearPutSpreadResponse(BaseModel):
     debit: DebitBreakdown
+    execution_check: ExecutionRealityCheck
     risk_reward: RiskReward
     delta: DeltaAnalysis
     volatility: VolatilityAnalysis

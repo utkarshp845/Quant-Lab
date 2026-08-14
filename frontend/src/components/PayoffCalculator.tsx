@@ -36,7 +36,7 @@ export function PayoffCalculator({
       <h2 className="section-title">7. Payoff Calculator</h2>
       <p className="section-subtitle">
         Enter a hypothetical price for the underlying at expiration to see the spread's value and
-        profit/loss at that price.
+        profit/loss at that price, using the primary (Mid) Debit.
       </p>
       <label className="field payoff-price-field">
         <span className="field-label">Expiration Price ($)</span>
@@ -66,7 +66,7 @@ export function PayoffCalculator({
             result={fmtUsd(result.spreadValue)}
           />
           <FormulaBox
-            formula="P/L per share = Spread Intrinsic Value - Debit"
+            formula="P/L per share = Spread Intrinsic Value - Mid Debit"
             substitution={`${fmtUsd(result.spreadValue)} - ${fmtUsd(debitPerShare)}`}
             result={fmtSigned(result.plPerShare)}
           />

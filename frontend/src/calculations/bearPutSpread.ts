@@ -16,9 +16,22 @@
 
 export const CONTRACT_MULTIPLIER = 100;
 
-/** Debit (per share) = Long Put Ask - Short Put Bid. */
-export function debitPerShare(longPutAsk: number, shortPutBid: number): number {
-  return longPutAsk - shortPutBid;
+/** Mid Price = (Bid + Ask) / 2. */
+export function midPrice(bid: number, ask: number): number {
+  return (bid + ask) / 2;
+}
+
+/**
+ * Debit (per share) = Long Put Price - Short Put Price.
+ *
+ * This app computes this same formula twice with two different price
+ * conventions: Mid Debit (the PRIMARY debit, using midPrice() for
+ * both legs) and Conservative Entry Debit (using ask/bid directly).
+ * See backend/app/calculations/bear_put_spread.py for the full
+ * rationale.
+ */
+export function debitPerShare(longPutPrice: number, shortPutPrice: number): number {
+  return longPutPrice - shortPutPrice;
 }
 
 /** Debit (per contract) = Debit per share x 100 shares/contract. */

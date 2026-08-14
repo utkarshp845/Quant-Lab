@@ -36,6 +36,12 @@ spreadsheet — but with every step shown, not hidden behind a single
   probability and a P/L, and combines them into an Expected Value — see
   [Phase 2 — the probability engine](#phase-2--the-probability-engine)
   below.
+- **(Phase 3) Runs a Monte Carlo simulation**: draws up to 100,000 random
+  expiration prices from the same model and reports probability of
+  profit/max-loss/max-profit, expected value, expected return, median,
+  percentile bands, and expected gain/loss — see
+  [Phase 3 — Monte Carlo simulation](#phase-3--monte-carlo-simulation)
+  below.
 - Displays a "Trade Analysis" summary card — deliberately not a
   buy/sell recommendation.
 - Validates inputs (strike ordering, non-negative prices, delta range,
@@ -99,22 +105,38 @@ The calculator is pre-populated with this hypothetical setup on load:
 
 With the example inputs above, the app should show:
 
+**Primary analysis (Mid Debit — drives everything below):**
+
 | Metric | Value |
 |---|---|
-| Debit | $4.39 / share ($439.00 / contract) |
-| Max Loss | $439.00 |
-| Max Profit | $361.00 |
-| Breakeven | $80.61 |
+| Mid Debit | $4.27 / share ($427.00 / contract) |
+| Max Loss | $427.00 |
+| Max Profit | $373.00 |
+| Breakeven | $80.73 |
 | Spread Delta | -0.29 |
 | Average IV | 43% |
 | Expected Move | ≈ ±$10.11 |
-| Z-score of breakeven | ≈ -0.138 |
-| Approx. probability below breakeven | ≈ 44.5% |
-| Expected Value (Phase 2, simplified model) | ≈ -$69.77 / contract |
+| Z-score of breakeven | ≈ -0.126 |
+| Approx. probability below breakeven | ≈ 45.0% |
+| Expected Value (Phase 2, simplified model) | ≈ -$57.77 / contract |
+| Expected Value (Phase 3, Monte Carlo, 100k sims) | ≈ -$57.77 / contract ± a few dollars, run-to-run |
+
+**Execution Reality Check (Conservative Entry Debit — the original spec's
+worked-example numbers, still exact, just relabeled):**
+
+| Metric | Value |
+|---|---|
+| Conservative Entry Debit | $4.39 / share ($439.00 / contract) |
+| Conservative Max Loss | $439.00 |
+| Conservative Max Profit | $361.00 |
+| Conservative Breakeven | $80.61 |
+| Slippage Cost vs. Mid | $12.00 / contract |
 
 These exact numbers are also encoded as automated tests — see
-`backend/tests/test_calculations.py::TestGraduationExample`,
-`backend/tests/test_probability_distribution.py`, and
+`backend/tests/test_calculations.py::TestGraduationExampleMidDebit` and
+`TestGraduationExampleConservativeDebit`,
+`backend/tests/test_probability_distribution.py`,
+`backend/tests/test_monte_carlo.py`, and
 `backend/tests/test_api.py::TestBearPutSpreadEndpoint::test_graduation_example_full_response`.
 
 ## 8. How the mathematics works
@@ -123,22 +145,45 @@ A **bear put spread** buys a put at a higher strike (the "long put") and
 sells a put at a lower strike (the "short put"), both with the same
 expiration. It profits if the underlying falls.
 
-**Debit.** We buy the long put at the **ask** (what a buyer pays) and sell
-the short put at the **bid** (what a seller receives):
+**Debit — computed two ways.** This app computes the debit twice, because
+the two conventions answer different questions:
 
 ```
-Debit = Long Put Ask − Short Put Bid
+Mid Price          = (Bid + Ask) / 2
+Mid Debit          = Long Put Mid − Short Put Mid       (PRIMARY)
+Conservative Debit = Long Put Ask − Short Put Bid       (execution check)
 ```
+
+**Mid Debit is the primary debit** — it drives every calculation below
+(Max Loss/Profit, Breakeven, the Probability Engine, Monte Carlo). It uses
+the midpoint of each leg's bid/ask, i.e. what the market is "really"
+quoting the spread at, ignoring the cost of actually crossing the spread.
+Use it for theoretical trade comparison, expected-value modeling, and
+comparing many candidate trades against each other.
+
+**Conservative Entry Debit** buys the long put at the **ask** (what a
+buyer must pay) and sells the short put at the **bid** (what a seller
+receives) — the worst realistic price if you had to cross the full
+bid/ask spread on both legs at once. It feeds a separate "Execution
+Reality Check" panel (conservative Max Loss/Profit/Breakeven, and a
+"Slippage Cost" — the extra amount the conservative debit costs versus
+the mid) and does **not** feed anything else in this app. Use it for
+realistic entry cost, conservative P/L, and checking whether the trade
+survives transaction costs and slippage.
+
+Both are the exact same formula (`long price − short price`) — see
+`backend/app/calculations/bear_put_spread.py::debit_per_share` — just fed
+different input prices.
 
 One option contract covers 100 shares, so the dollar cost is the debit
 times 100.
 
 **Max Loss.** A debit spread's worst case is losing the entire amount paid
 to enter it (if the underlying finishes at or above the long strike, both
-puts expire worthless):
+puts expire worthless). Uses the primary (Mid) Debit:
 
 ```
-Max Loss = Debit × 100
+Max Loss = Mid Debit × 100
 ```
 
 **Max Profit.** The spread's value is capped at the distance between the
@@ -147,7 +192,7 @@ below the short strike:
 
 ```
 Strike Width = Long Strike − Short Strike
-Max Profit = (Strike Width − Debit) × 100
+Max Profit = (Strike Width − Mid Debit) × 100
 ```
 
 **Breakeven.** Between the strikes, the spread's value at expiration equals
@@ -155,7 +200,7 @@ Max Profit = (Strike Width − Debit) × 100
 solving for price gives:
 
 ```
-Breakeven = Long Strike − Debit
+Breakeven = Long Strike − Mid Debit
 ```
 
 **Spread Delta.** Put deltas are negative. Selling the short put means we
@@ -218,7 +263,7 @@ shape — see `backend/app/calculations/payoff_scenarios.py`.
 ### Phase 2 — the probability engine
 
 Section 6 above collapses the whole distribution of possible outcomes into
-one number ("44.5% probability of finishing below breakeven"). Phase 2
+one number ("45.0% probability of finishing below breakeven"). Phase 2
 builds the actual distribution instead, in
 `backend/app/calculations/probability_distribution.py`:
 
@@ -254,10 +299,10 @@ P/L across every bucket:
 EV = Σ P(bucket_i) × P/L(bucket_i)
 ```
 
-For the graduation example this comes out to **≈ -$69.77 per contract** —
-a useful, slightly counter-intuitive lesson: a 44.5% chance of finishing
+For the graduation example this comes out to **≈ -$57.77 per contract** —
+a useful, slightly counter-intuitive lesson: a 45.0% chance of finishing
 profitable does **not** imply positive EV, because the profit and loss
-magnitudes here aren't symmetric (capped at +$361 one way, -$439 the
+magnitudes here aren't symmetric (capped at +$373 one way, -$427 the
 other).
 
 **Why this EV is not a trading edge.** It's computed under the exact same
@@ -278,6 +323,61 @@ axis, with the same piecewise-linear payoff line from the payoff chart
 overlaid on a right axis — so you can see, at a glance, how likely each
 profit or loss outcome is.
 
+### Phase 3 — Monte Carlo simulation
+
+Phase 2 gets an *exact* answer by integrating the normal distribution's CDF
+in closed form. Phase 3, in `backend/app/calculations/monte_carlo.py`,
+gets an *approximate* answer a completely different way: it draws a large
+number of random expiration prices from that same model and just counts
+what happened.
+
+**1. Draw random prices.** Using `numpy`'s random generator, draw
+`num_simulations` (1,000 / 10,000 / 100,000, selectable in the UI) prices
+from `Normal(current price, expected move)` — the identical distribution
+Phase 2 integrates exactly.
+
+**2. Run every draw through the same payoff formulas.** Each simulated
+price is put through the exact intrinsic-value / P&L formulas from section
+13 above (vectorized with numpy instead of a 100,000-iteration Python
+loop, but it's the same arithmetic, applied elementwise, not a different
+formula).
+
+**3. Summarize the resulting sample of outcomes**:
+
+- **Probability of profit** — the fraction of draws with P/L > 0.
+- **Probability of max loss / max profit** — the fraction of draws at or
+  beyond the long strike / at or below the short strike (the payoff's flat
+  regions).
+- **Expected Value** — the plain average P/L across all draws. Because this
+  is a *random* estimate (not an integral), it will differ slightly from
+  Phase 2's exact EV every time you re-run it — and should land closer to
+  it as `num_simulations` grows. Try switching between 1,000 and 100,000
+  simulations to watch this convergence happen.
+- **Expected Return** — Expected Value expressed as a percentage of the
+  debit paid (`EV / debit per contract`), i.e. return on the capital at
+  risk.
+- **Median and percentiles (5th / 25th / 75th / 95th)** of the simulated
+  P/L. With a capped payoff like this spread, percentiles often land
+  exactly on the max-loss or max-profit plateau, since a large chunk of
+  outcomes pile up there.
+- **Expected gain / expected loss** — the average P/L among just the
+  winning draws, and separately among just the losing draws.
+
+**Why run this at all if Phase 2 is exact?** For a plain normal
+distribution, Monte Carlo doesn't beat the closed-form answer — it's
+strictly noisier. Its value here is as a **correctness check** (two
+independently-implemented methods agreeing is reassuring) and as the
+foundation for later phases: once a future phase introduces a distribution
+that has no closed-form CDF (e.g. an empirically skewed one), simulation
+becomes the *only* way to get these numbers, and this is that machinery
+already in place and already tested.
+
+**Labeling discipline.** Every number in this section is a property of N
+random draws under a simplified model — not a fact about the real market.
+The UI states results as *"Based on the assumptions of this model, 45.1%
+of 100,000 simulated outcomes were profitable"* — never *"there's a 45%
+chance of profit."*
+
 ## 9. Financial assumptions
 
 - This is an educational research tool. It does not provide financial
@@ -297,6 +397,12 @@ profit or loss outcome is.
   probability calculation. It is **not** a real trading edge — see
   [Phase 2 — the probability engine](#phase-2--the-probability-engine) for
   why.
+- **(Phase 3)** Every number in the Monte Carlo section is a **simulated
+  model output**, not an observed fact — it describes what happened across
+  N random draws from the same simplified model as Phase 2, not what will
+  happen to the real underlying. Re-running the simulation gives slightly
+  different numbers each time; see
+  [Phase 3 — Monte Carlo simulation](#phase-3--monte-carlo-simulation).
 
 ## 10. What is intentionally NOT implemented yet
 
@@ -306,16 +412,20 @@ database, authentication, user accounts, portfolio management, a scanner.
 All of that is out of scope, which is about correctness and transparency of
 a single, manually-driven calculation.
 
-Note: the Phase 2 "probability engine" is **not** Monte Carlo simulation —
-it integrates the normal distribution's CDF in closed form over price
-buckets rather than drawing random samples. True Monte Carlo (useful once
-the model supports non-normal / skewed distributions that don't have a
-closed-form CDF) is still future scope.
+Note: Phase 2's "probability engine" and Phase 3's "Monte Carlo
+simulation" are two independent, cross-checked implementations of the same
+underlying model — Phase 2 integrates the normal distribution's CDF in
+closed form over price buckets, Phase 3 draws random samples from it. Both
+exist in this app; see
+[Phase 3 — Monte Carlo simulation](#phase-3--monte-carlo-simulation) above.
+True value from *simulation specifically* (as opposed to closed-form math)
+shows up once a future phase introduces a non-normal / skewed distribution
+that has no closed-form CDF to integrate — still future scope.
 
 ## 11. Roadmap
 
-Each phase below is a planned direction, not yet implemented (except Phase 1
-and Phase 2, which are done). Phases are ordered so each one only becomes
+Each phase below is a planned direction, not yet implemented (except
+Phases 1-3, which are done). Phases are ordered so each one only becomes
 meaningful once the one before it exists — there's no point simulating
 100,000 prices (Phase 3) before there's a validated closed-form model to
 cross-check them against (Phase 2), and no point scanning real symbols
@@ -329,20 +439,22 @@ distribution (closed-form, via the normal CDF) combined with the payoff to
 produce an Expected Value. See
 [Phase 2 — the probability engine](#phase-2--the-probability-engine) above.
 
-**Phase 3 — Monte Carlo simulation.** Stop reasoning about a handful of
-hypothetical prices and instead simulate a large number (e.g. 100,000) of
-random expiration prices drawn from a price-distribution model, run each one
-through the exact same `payoff_at_expiration` function already used
+**Phase 3 — Monte Carlo simulation.** *(done)* Stop reasoning about a
+handful of hypothetical prices and instead simulate a large number (e.g.
+100,000) of random expiration prices drawn from a price-distribution model,
+run each one through the exact same payoff formulas already used
 everywhere else in this app, and summarize the resulting distribution of
 outcomes: probability of profit, probability of max loss, probability of
-max profit, expected value, median P/L, and percentile bands (5th, 25th,
-75th, 95th), plus expected gain and expected loss conditioned on winning or
-losing. Because Phase 2's bucketed engine is already a closed-form,
-"exact" answer for a normal distribution, Monte Carlo doesn't replace
-it in the normal case — its real value shows up once the price model stops
-being a plain normal distribution (e.g. once Phase 4/5 bring in skewed or
-empirical distributions that have no closed-form CDF to integrate). Until
-then, Phase 3 doubles as a correctness check: a 100,000-path simulation
+max profit, expected value, expected return, median P/L, and percentile
+bands (5th, 25th, 75th, 95th), plus expected gain and expected loss
+conditioned on winning or losing. See
+[Phase 3 — Monte Carlo simulation](#phase-3--monte-carlo-simulation) above.
+Because Phase 2's bucketed engine is already a closed-form, "exact" answer
+for a normal distribution, Monte Carlo doesn't replace it in the normal
+case — its real value shows up once the price model stops being a plain
+normal distribution (e.g. once Phase 4/5 bring in skewed or empirical
+distributions that have no closed-form CDF to integrate). Until then,
+Phase 3 doubles as a correctness check: a 100,000-path simulation
 under the *same* normal assumption should converge to the same numbers
 Phase 2 computes exactly. Every simulation-derived number must be labeled
 as a **model output**, not a fact — e.g. "Based on the assumptions of this
@@ -416,11 +528,13 @@ backend/
     models/
       bear_put_spread.py           Input models + validation
       response.py                  Response models (formulas embedded)
+      monte_carlo.py               Phase 3: simulation request/response models
     calculations/
       stats.py                     normal_cdf
       bear_put_spread.py           All core formulas, one function each
       payoff_scenarios.py          Payoff table / chart point generation
       probability_distribution.py  Phase 2: bucketed probability distribution + EV
+      monte_carlo.py               Phase 3: random simulation, percentiles, histogram
     api/
       bear_put_spread.py           Route handlers, calls calculations in sequence
   tests/
@@ -428,6 +542,7 @@ backend/
     test_validation.py             Input validation tests
     test_api.py                    End-to-end API tests
     test_probability_distribution.py  Phase 2: bucket probabilities, EV, tails sum to 1.0
+    test_monte_carlo.py            Phase 3: reproducibility, percentile ordering, convergence
   requirements.txt
   pytest.ini
 frontend/
@@ -439,6 +554,8 @@ frontend/
       DistributionChart.tsx        Phase 2: probability histogram + payoff line, combined
       DistributionTable.tsx        Phase 2: full bucket table
       ProbabilityEngineSection.tsx Phase 2: section wrapper, EV formula + disclaimer
+      MonteCarloSection.tsx        Phase 3: run controls, stats, percentiles, sample paths
+      MonteCarloHistogramChart.tsx Phase 3: empirical outcome histogram
     pages/CalculatorPage.tsx       Composes the page, owns form state
     App.tsx, main.tsx, index.css
 ```

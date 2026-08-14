@@ -3,6 +3,7 @@ import { analyzeBearPutSpread, ApiError } from "../api/client";
 import { AssumptionsFooter } from "../components/AssumptionsFooter";
 import { DeltaSection } from "../components/DeltaSection";
 import { InputsPanel } from "../components/InputsPanel";
+import { MonteCarloSection } from "../components/MonteCarloSection";
 import { PayoffCalculator } from "../components/PayoffCalculator";
 import { PayoffChart } from "../components/PayoffChart";
 import { PayoffTable } from "../components/PayoffTable";
@@ -164,6 +165,12 @@ export function CalculatorPage() {
             maxProfit={data.risk_reward.max_profit_per_contract}
           />
           <ProbabilityEngineSection data={data} underlyingPrice={underlyingPrice} />
+          <MonteCarloSection
+            request={request}
+            breakeven={data.risk_reward.breakeven}
+            underlyingPrice={underlyingPrice}
+            debitPerContract={data.debit.debit_per_contract}
+          />
           <TradeSummary data={data} />
         </div>
       )}
