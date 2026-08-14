@@ -137,6 +137,170 @@ body {
   border-top-color: var(--color-sell);
 }
 
+/* ---------- Input mode toggle (Manual Entry / Import CSV) ---------- */
+
+.input-mode-toggle {
+  display: inline-flex;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  overflow: hidden;
+  margin-bottom: 18px;
+}
+
+.mode-tab {
+  background: var(--color-surface);
+  border: none;
+  border-right: 1px solid var(--color-border);
+  padding: 8px 16px;
+  font-size: 0.85rem;
+  font-weight: 600;
+  cursor: pointer;
+  color: var(--color-text-muted);
+}
+
+.mode-tab:last-child {
+  border-right: none;
+}
+
+.mode-tab-active {
+  background: var(--color-accent);
+  color: white;
+}
+
+/* ---------- CSV import workflow ---------- */
+
+.csv-upload-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.csv-upload-btn {
+  display: inline-block;
+  background: var(--color-accent);
+  color: white;
+  border-radius: 8px;
+  padding: 9px 18px;
+  font-size: 0.88rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.csv-file-name {
+  font-size: 0.85rem;
+  color: var(--color-text-muted);
+}
+
+.csv-detail-block {
+  margin-bottom: 10px;
+}
+
+.csv-detail-label {
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--color-text-muted);
+  margin-bottom: 4px;
+}
+
+.csv-columns-list {
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+  word-break: break-word;
+}
+
+.csv-mapping-list {
+  margin: 0;
+  padding-left: 18px;
+  font-size: 0.82rem;
+}
+
+.csv-selectors-row {
+  display: flex;
+  gap: 16px;
+  flex-wrap: wrap;
+  margin: 14px 0;
+}
+
+.csv-selectors-row select {
+  padding: 7px 9px;
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  font-size: 0.9rem;
+  background: var(--color-surface);
+  color: var(--color-text);
+  min-width: 160px;
+}
+
+.chain-type-toggle {
+  display: inline-flex;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  overflow: hidden;
+  margin-bottom: 10px;
+}
+
+.chain-table th,
+.chain-table td {
+  text-align: right;
+}
+
+.chain-table th:first-child,
+.chain-table td:first-child {
+  text-align: left;
+}
+
+.chain-select-cell {
+  display: flex;
+  gap: 6px;
+  justify-content: flex-end;
+}
+
+.chain-select-btn {
+  border: 1px solid var(--color-border);
+  background: var(--color-surface);
+  border-radius: 6px;
+  padding: 4px 8px;
+  font-size: 0.76rem;
+  cursor: pointer;
+  color: var(--color-text-muted);
+}
+
+.chain-select-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.chain-select-btn-active-buy {
+  background: var(--color-buy);
+  color: white;
+  border-color: var(--color-buy);
+}
+
+.chain-select-btn-active-sell {
+  background: var(--color-sell);
+  color: white;
+  border-color: var(--color-sell);
+}
+
+.row-selected-long {
+  background: var(--color-buy-bg);
+}
+
+.row-selected-short {
+  background: var(--color-sell-bg);
+}
+
+.chain-empty-row {
+  text-align: center;
+  color: var(--color-text-muted);
+  padding: 14px;
+}
+
+.csv-selection-summary {
+  margin-top: 16px;
+}
+
 .field {
   display: block;
   margin-bottom: 10px;

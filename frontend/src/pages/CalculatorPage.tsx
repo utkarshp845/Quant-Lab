@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { analyzeBearPutSpread, ApiError } from "../api/client";
 import { AssumptionsFooter } from "../components/AssumptionsFooter";
 import { DeltaSection } from "../components/DeltaSection";
-import { InputsPanel } from "../components/InputsPanel";
+import { InputsPanel, type InputMode } from "../components/InputsPanel";
 import { MonteCarloSection } from "../components/MonteCarloSection";
 import { PayoffCalculator } from "../components/PayoffCalculator";
 import { PayoffChart } from "../components/PayoffChart";
@@ -65,6 +65,7 @@ function tryParseRequest(form: BearPutSpreadFormState): BearPutSpreadRequest | n
 
 export function CalculatorPage() {
   const [form, setForm] = useState<BearPutSpreadFormState>(GRADUATION_EXAMPLE);
+  const [inputMode, setInputMode] = useState<InputMode>("manual");
   const [data, setData] = useState<BearPutSpreadResponse | null>(null);
   const [fieldErrors, setFieldErrors] = useState<string[]>([]);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
@@ -126,7 +127,13 @@ export function CalculatorPage() {
         {loading && <span className="loading-pill">Recalculating…</span>}
       </header>
 
-      <InputsPanel form={form} onChange={setForm} fieldErrors={fieldErrors} />
+      <InputsPanel
+        form={form}
+        onChange={setForm}
+        fieldErrors={fieldErrors}
+        mode={inputMode}
+        onModeChange={setInputMode}
+      />
 
       {errorMessage && (
         <div className="error-banner">

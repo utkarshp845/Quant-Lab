@@ -1,4 +1,5 @@
 import type { BearPutSpreadRequest, BearPutSpreadResponse } from "../types/bearPutSpread";
+import type { CsvImportResponse } from "../types/csvImport";
 import type { MonteCarloRequest, MonteCarloResult } from "../types/monteCarlo";
 
 const API_BASE = "http://localhost:8000/api";
@@ -69,4 +70,24 @@ export function analyzeBearPutSpread(request: BearPutSpreadRequest): Promise<Bea
 
 export function runMonteCarloSimulation(request: MonteCarloRequest): Promise<MonteCarloResult> {
   return postJson<MonteCarloResult>("/bear-put-spread/monte-carlo", request);
+}
+
+export async function importCsv(file: File): Promise<CsvImportResponse> {
+  const formData = new FormData();
+  formData.append("file", file);
+
+  const res = await fetch(`${API_BASE}/csv-import`, {
+    method: "POST",
+    // No Content-Type header -- the browser sets the multipart
+    // boundary itself when the body is a FormData instance.
+    body: formData,
+  });
+
+  if (!res.ok) {
+    const errorBody = await res.json().catch(() => null);
+    const details = formatValidationErrors(errorBody);
+    throw new ApiError(details[0] ?? "Could not import this CSV file.", details);
+  }
+
+  return res.json();
 }
