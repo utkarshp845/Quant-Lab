@@ -1,0 +1,111 @@
+"""End-to-end tests hitting the FastAPI app through the ASGI test client.
+
+These confirm the API wiring (request -> validation -> calculations ->
+response) works together, on top of the unit tests that already cover
+each calculation in isolation.
+"""
+
+from fastapi.testclient import TestClient
+
+from app.main import app
+
+client = TestClient(app)
+
+GRADUATION_PAYLOAD = {
+    "underlying": {"symbol": "XYZ", "price": 82.00, "dte": 30},
+    "long_put": {"strike": 85, "bid": 5.00, "ask": 5.10, "delta": -0.58, "iv": 0.44},
+    "short_put": {"strike": 77, "bid": 0.71, "ask": 0.85, "delta": -0.29, "iv": 0.42},
+}
+
+
+class TestHealthCheck:
+    def test_health(self):
+        resp = client.get("/api/health")
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "ok"
+
+
+class TestBearPutSpreadEndpoint:
+    def test_graduation_example_full_response(self):
+        resp = client.post("/api/bear-put-spread", json=GRADUATION_PAYLOAD)
+        assert resp.status_code == 200
+        data = resp.json()
+
+        assert round(data["debit"]["debit_per_share"], 2) == 4.39
+        assert round(data["debit"]["debit_per_contract"], 2) == 439.0
+        assert round(data["risk_reward"]["max_loss_per_contract"], 2) == 439.0
+        assert round(data["risk_reward"]["max_profit_per_contract"], 2) == 361.0
+        assert round(data["risk_reward"]["breakeven"], 2) == 80.61
+        assert round(data["delta"]["spread_delta"], 2) == -0.29
+        assert round(data["volatility"]["average_iv"], 2) == 0.43
+        assert round(data["volatility"]["expected_move"], 2) == 10.11
+        assert round(data["probability"]["z_score"], 3) == -0.138
+        assert round(data["probability"]["probability_below_breakeven"], 3) == 0.445
+
+        # Payoff table should include the key reference prices.
+        labels = {row["label"] for row in data["payoff_table"] if row["label"]}
+        assert "Short Put Strike" in labels
+        assert "Long Put Strike" in labels
+        assert "Breakeven" in labels
+        assert "Current Price" in labels
+
+        # Chart should have exactly 4 breakpoints (piecewise-linear shape).
+        assert len(data["payoff_chart_points"]) == 4
+
+        summary = data["summary"]
+        assert summary["symbol"] == "XYZ"
+        assert round(summary["breakeven"], 2) == 80.61
+
+    def test_invalid_strike_ordering_returns_422(self):
+        bad_payload = {
+            **GRADUATION_PAYLOAD,
+            "long_put": {**GRADUATION_PAYLOAD["long_put"], "strike": 70},
+        }
+        resp = client.post("/api/bear-put-spread", json=bad_payload)
+        assert resp.status_code == 422
+
+    def test_negative_price_returns_422(self):
+        bad_payload = {
+            **GRADUATION_PAYLOAD,
+            "underlying": {**GRADUATION_PAYLOAD["underlying"], "price": -1},
+        }
+        resp = client.post("/api/bear-put-spread", json=bad_payload)
+        assert resp.status_code == 422
+
+    def test_missing_field_returns_422(self):
+        bad_payload = {"underlying": GRADUATION_PAYLOAD["underlying"]}  # missing legs
+        resp = client.post("/api/bear-put-spread", json=bad_payload)
+        assert resp.status_code == 422
+
+    def test_zero_dte_returns_422_not_500(self):
+        # DTE=0 is a valid *input* (see UnderlyingInput), but it makes
+        # the expected move zero, which makes the z-score undefined.
+        # This must surface as a clean 422, not an unhandled 500.
+        bad_payload = {
+            **GRADUATION_PAYLOAD,
+            "underlying": {**GRADUATION_PAYLOAD["underlying"], "dte": 0},
+        }
+        resp = client.post("/api/bear-put-spread", json=bad_payload)
+        assert resp.status_code == 422
+        assert "z-score" in resp.json()["detail"]
+
+
+class TestPayoffAtPriceEndpoint:
+    def test_payoff_at_breakeven_is_zero(self):
+        payload = {**GRADUATION_PAYLOAD, "expiration_price": 80.61}
+        resp = client.post("/api/bear-put-spread/payoff-at-price", json=payload)
+        assert resp.status_code == 200
+        data = resp.json()
+        assert abs(data["pl_per_share"]) < 0.01
+
+    def test_payoff_above_long_strike_is_max_loss(self):
+        payload = {**GRADUATION_PAYLOAD, "expiration_price": 90}
+        resp = client.post("/api/bear-put-spread/payoff-at-price", json=payload)
+        data = resp.json()
+        assert round(data["pl_per_contract"], 2) == -439.0
+
+    def test_payoff_below_short_strike_is_max_profit(self):
+        payload = {**GRADUATION_PAYLOAD, "expiration_price": 70}
+        resp = client.post("/api/bear-put-spread/payoff-at-price", json=payload)
+        data = resp.json()
+        assert round(data["pl_per_contract"], 2) == 361.0

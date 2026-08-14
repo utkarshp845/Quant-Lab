@@ -1,0 +1,65 @@
+import type { BearPutSpreadRequest, BearPutSpreadResponse } from "../types/bearPutSpread";
+
+const API_BASE = "http://localhost:8000/api";
+
+export class ApiError extends Error {
+  details: string[];
+  constructor(message: string, details: string[] = []) {
+    super(message);
+    this.details = details;
+  }
+}
+
+/**
+ * Parses a FastAPI/pydantic error body into readable strings.
+ *
+ * FastAPI returns `detail` in two shapes we need to handle: a list of
+ * pydantic field-validation errors (e.g. "long_put -> Ask must be
+ * greater than or equal to Bid"), or a single plain string, as raised
+ * by our own `HTTPException(422, detail="...")` calls for calculation
+ * errors like an undefined z-score.
+ */
+function formatValidationErrors(body: unknown): string[] {
+  if (typeof body !== "object" || body === null || !("detail" in body)) {
+    return [];
+  }
+  const detail = (body as { detail: unknown }).detail;
+
+  if (typeof detail === "string") {
+    return [detail];
+  }
+
+  if (Array.isArray(detail)) {
+    return (detail as Array<{ loc?: unknown[]; msg?: string }>).map((item) => {
+      // pydantic v2 prefixes custom validator ValueErrors with "Value
+      // error, " -- strip it, it just repeats what the reader can
+      // already see (this is an error message).
+      const msg = (item.msg ?? "Invalid input").replace(/^Value error,\s*/, "");
+      const loc = Array.isArray(item.loc) ? item.loc.filter((p) => p !== "body").join(" -> ") : "";
+      return loc ? `${loc}: ${msg}` : msg;
+    });
+  }
+
+  return [];
+}
+
+export async function analyzeBearPutSpread(
+  request: BearPutSpreadRequest,
+): Promise<BearPutSpreadResponse> {
+  const res = await fetch(`${API_BASE}/bear-put-spread`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(request),
+  });
+
+  if (!res.ok) {
+    const body = await res.json().catch(() => null);
+    const details = formatValidationErrors(body);
+    throw new ApiError(
+      details.length > 0 ? "Please fix the highlighted inputs." : "The server rejected this request.",
+      details,
+    );
+  }
+
+  return res.json();
+}

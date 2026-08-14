@@ -1,0 +1,178 @@
+"""API routes for the bear put spread calculator.
+
+This layer does no math of its own -- it validates the request
+(via the pydantic models), calls the pure functions in
+app.calculations, and assembles the results into the response model.
+Every calculation call is visible here in sequence, so tracing "how
+did we get this number" only ever requires reading this one function
+top to bottom.
+"""
+
+from fastapi import APIRouter, HTTPException
+
+from app.calculations import bear_put_spread as calc
+from app.calculations import payoff_scenarios
+from app.calculations import probability_distribution as dist
+from app.models.bear_put_spread import BearPutSpreadRequest
+from app.models.response import (
+    BearPutSpreadResponse,
+    DebitBreakdown,
+    DeltaAnalysis,
+    DistributionBucket,
+    PayoffScenario,
+    ProbabilityAnalysis,
+    ProbabilityDistribution,
+    RiskReward,
+    TradeSummary,
+    VolatilityAnalysis,
+)
+
+router = APIRouter()
+
+
+def _analyze(request: BearPutSpreadRequest) -> BearPutSpreadResponse:
+    underlying = request.underlying
+    long_put = request.long_put
+    short_put = request.short_put
+
+    # --- Trade structure / cost -------------------------------------------------
+    debit_share = calc.debit_per_share(long_put.ask, short_put.bid)
+    debit_contract = calc.debit_per_contract(debit_share)
+
+    # --- Risk / reward ------------------------------------------------------
+    width = calc.strike_width(long_put.strike, short_put.strike)
+    max_loss = calc.max_loss_per_contract(debit_share)
+    max_profit_share = calc.max_profit_per_share(width, debit_share)
+    max_profit_contract = calc.max_profit_per_contract(max_profit_share)
+    breakeven = calc.breakeven_price(long_put.strike, debit_share)
+
+    # --- Delta ----------------------------------------------------------------
+    net_delta = calc.spread_delta(long_put.delta, short_put.delta)
+
+    # --- Volatility -------------------------------------------------------------
+    avg_iv = calc.average_iv(long_put.iv, short_put.iv)
+    exp_move = calc.expected_move(underlying.price, avg_iv, underlying.dte)
+    lower_1sd, upper_1sd = calc.one_sigma_bounds(underlying.price, exp_move)
+
+    # --- Probability --------------------------------------------------------
+    z = calc.z_score(breakeven, underlying.price, exp_move)
+    probability = calc.probability_below_breakeven(z)
+
+    # --- Probability distribution + expected value ---------------------------
+    distribution = dist.build_probability_distribution(
+        underlying_price=underlying.price,
+        expected_move=exp_move,
+        long_strike=long_put.strike,
+        short_strike=short_put.strike,
+        debit_share=debit_share,
+        step=max(1.0, round(width / 4)),
+    )
+
+    # --- Payoff table + chart -------------------------------------------------
+    table = payoff_scenarios.generate_payoff_table(
+        underlying_price=underlying.price,
+        long_strike=long_put.strike,
+        short_strike=short_put.strike,
+        breakeven=breakeven,
+        debit_share=debit_share,
+    )
+    chart_points = payoff_scenarios.generate_payoff_chart_points(
+        long_strike=long_put.strike,
+        short_strike=short_put.strike,
+        debit_share=debit_share,
+        padding=max(width, exp_move, 1.0),
+    )
+
+    return BearPutSpreadResponse(
+        debit=DebitBreakdown(
+            long_put_ask=long_put.ask,
+            short_put_bid=short_put.bid,
+            debit_per_share=debit_share,
+            debit_per_contract=debit_contract,
+        ),
+        risk_reward=RiskReward(
+            strike_width=width,
+            max_loss_per_contract=max_loss,
+            max_profit_per_share=max_profit_share,
+            max_profit_per_contract=max_profit_contract,
+            breakeven=breakeven,
+        ),
+        delta=DeltaAnalysis(
+            long_delta=long_put.delta,
+            short_delta=short_put.delta,
+            spread_delta=net_delta,
+        ),
+        volatility=VolatilityAnalysis(
+            average_iv=avg_iv,
+            expected_move=exp_move,
+            lower_1sd=lower_1sd,
+            upper_1sd=upper_1sd,
+        ),
+        probability=ProbabilityAnalysis(
+            z_score=z,
+            probability_below_breakeven=probability,
+        ),
+        distribution=ProbabilityDistribution(
+            buckets=[DistributionBucket(**b) for b in distribution["buckets"]],
+            expected_value_per_share=distribution["expected_value_per_share"],
+            expected_value_per_contract=distribution["expected_value_per_contract"],
+            total_probability=distribution["total_probability"],
+            mean=distribution["mean"],
+            std_dev=distribution["std_dev"],
+        ),
+        payoff_table=[PayoffScenario(**row) for row in table],
+        payoff_chart_points=[PayoffScenario(**row) for row in chart_points],
+        summary=TradeSummary(
+            symbol=underlying.symbol,
+            underlying_price=underlying.price,
+            dte=underlying.dte,
+            long_put_strike=long_put.strike,
+            short_put_strike=short_put.strike,
+            debit_per_contract=debit_contract,
+            max_loss_per_contract=max_loss,
+            max_profit_per_contract=max_profit_contract,
+            breakeven=breakeven,
+            spread_delta=net_delta,
+            average_iv=avg_iv,
+            expected_move=exp_move,
+            probability_below_breakeven=probability,
+            expected_value_per_contract=distribution["expected_value_per_contract"],
+        ),
+    )
+
+
+@router.post("/bear-put-spread", response_model=BearPutSpreadResponse)
+def analyze_bear_put_spread(request: BearPutSpreadRequest) -> BearPutSpreadResponse:
+    """Run the full bear put spread analysis on the given inputs.
+
+    A ValueError from the calculation layer (e.g. a z-score that is
+    undefined because DTE=0 makes the expected move zero) is a valid,
+    anticipated input combination -- not a server bug -- so it is
+    reported back as a 422 with a clear message rather than a 500.
+    """
+    try:
+        return _analyze(request)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+class PayoffAtPriceRequest(BearPutSpreadRequest):
+    expiration_price: float
+
+
+@router.post("/bear-put-spread/payoff-at-price", response_model=PayoffScenario)
+def payoff_at_price(request: PayoffAtPriceRequest) -> PayoffScenario:
+    """Compute the spread's P/L for one arbitrary expiration price.
+
+    This backs the "payoff calculator" section, where the user types
+    in a hypothetical expiration price and sees the resulting P/L,
+    separate from the fixed scenario table.
+    """
+    debit_share = calc.debit_per_share(request.long_put.ask, request.short_put.bid)
+    result = calc.payoff_at_expiration(
+        long_strike=request.long_put.strike,
+        short_strike=request.short_put.strike,
+        expiration_price=request.expiration_price,
+        debit_share=debit_share,
+    )
+    return PayoffScenario(**result, is_profit=result["pl_per_share"] > 0)

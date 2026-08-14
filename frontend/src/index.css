@@ -1,0 +1,642 @@
+:root {
+  --color-bg: #f6f7f9;
+  --color-surface: #ffffff;
+  --color-border: #e2e5ea;
+  --color-text: #1a1d23;
+  --color-text-muted: #5b6270;
+  --color-buy: #2563eb;
+  --color-buy-bg: #eaf1ff;
+  --color-sell: #b45309;
+  --color-sell-bg: #fdf1e0;
+  --color-profit: #16803c;
+  --color-profit-bg: #e9f9ee;
+  --color-loss: #c62828;
+  --color-loss-bg: #fdecec;
+  --color-accent: #6d28d9;
+  --radius: 10px;
+  --font-mono: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  background: var(--color-bg);
+  color: var(--color-text);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial,
+    sans-serif;
+  line-height: 1.5;
+}
+
+.page {
+  max-width: 920px;
+  margin: 0 auto;
+  padding: 24px 20px 64px;
+}
+
+/* ---------- Header ---------- */
+
+.page-header {
+  margin-bottom: 28px;
+  border-bottom: 2px solid var(--color-border);
+  padding-bottom: 16px;
+  position: relative;
+}
+
+.page-header h1 {
+  margin: 0 0 4px;
+  font-size: 1.9rem;
+  letter-spacing: -0.02em;
+}
+
+.tagline {
+  margin: 0;
+  color: var(--color-text-muted);
+  font-size: 0.95rem;
+  max-width: 640px;
+}
+
+.loading-pill {
+  position: absolute;
+  top: 4px;
+  right: 0;
+  background: var(--color-buy-bg);
+  color: var(--color-buy);
+  font-size: 0.78rem;
+  padding: 3px 10px;
+  border-radius: 999px;
+}
+
+/* ---------- Sections ---------- */
+
+.section {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  padding: 20px 22px;
+  margin-bottom: 18px;
+}
+
+.section-title {
+  margin: 0 0 6px;
+  font-size: 1.05rem;
+  font-weight: 700;
+}
+
+.section-subtitle {
+  margin: 0 0 16px;
+  color: var(--color-text-muted);
+  font-size: 0.88rem;
+}
+
+/* ---------- Inputs ---------- */
+
+.inputs-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 14px;
+}
+
+@media (max-width: 780px) {
+  .inputs-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.input-card {
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  padding: 14px;
+  border-top-width: 4px;
+}
+
+.input-card h3 {
+  margin: 0 0 10px;
+  font-size: 0.95rem;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.underlying-card {
+  border-top-color: #64748b;
+}
+
+.accent-buy {
+  border-top-color: var(--color-buy);
+}
+
+.accent-sell {
+  border-top-color: var(--color-sell);
+}
+
+.field {
+  display: block;
+  margin-bottom: 10px;
+}
+
+.field-label {
+  display: block;
+  font-size: 0.76rem;
+  color: var(--color-text-muted);
+  margin-bottom: 3px;
+}
+
+.field input {
+  width: 100%;
+  padding: 7px 9px;
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  font-size: 0.92rem;
+  background: var(--color-surface);
+  color: var(--color-text);
+}
+
+.field input:focus {
+  outline: 2px solid var(--color-buy);
+  outline-offset: 1px;
+}
+
+.payoff-price-field {
+  max-width: 260px;
+  margin-bottom: 16px;
+}
+
+/* ---------- Badges ---------- */
+
+.badge {
+  font-size: 0.68rem;
+  font-weight: 700;
+  padding: 2px 8px;
+  border-radius: 999px;
+  letter-spacing: 0.03em;
+}
+
+.badge-buy {
+  background: var(--color-buy);
+  color: white;
+}
+
+.badge-sell {
+  background: var(--color-sell);
+  color: white;
+}
+
+/* ---------- Trade structure ---------- */
+
+.structure-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 14px;
+  margin-bottom: 18px;
+}
+
+@media (max-width: 640px) {
+  .structure-row {
+    grid-template-columns: 1fr;
+  }
+}
+
+.structure-leg {
+  border: 1px solid var(--color-border);
+  border-left-width: 5px;
+  border-radius: 8px;
+  padding: 12px 14px;
+}
+
+.structure-leg.accent-buy {
+  border-left-color: var(--color-buy);
+  background: var(--color-buy-bg);
+}
+
+.structure-leg.accent-sell {
+  border-left-color: var(--color-sell);
+  background: var(--color-sell-bg);
+}
+
+.structure-price {
+  font-size: 0.84rem;
+  color: var(--color-text-muted);
+  margin-top: 4px;
+}
+
+/* ---------- Metrics ---------- */
+
+.metric-block {
+  margin-bottom: 16px;
+}
+
+.metric-block:last-child {
+  margin-bottom: 0;
+}
+
+.metric-heading {
+  font-weight: 600;
+  font-size: 0.92rem;
+  margin-bottom: 8px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.metric-secondary {
+  font-size: 0.88rem;
+  margin-top: 8px;
+  color: var(--color-text-muted);
+}
+
+.metric-big {
+  font-size: 1.7rem;
+  font-weight: 700;
+  margin-bottom: 8px;
+}
+
+.risk-reward-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 14px;
+}
+
+@media (max-width: 780px) {
+  .risk-reward-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.metric-card {
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  padding: 14px;
+}
+
+.loss-card .metric-big {
+  color: var(--color-loss);
+}
+
+.profit-card .metric-big {
+  color: var(--color-profit);
+}
+
+.profit-text {
+  color: var(--color-profit);
+}
+
+.loss-text {
+  color: var(--color-loss);
+}
+
+.delta-row {
+  display: flex;
+  gap: 18px;
+  font-size: 0.88rem;
+  color: var(--color-text-muted);
+  margin-bottom: 8px;
+}
+
+.sigma-bounds {
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.85rem;
+  color: var(--color-text-muted);
+  margin-top: 6px;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.probability-callout {
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  padding: 14px;
+  background: #fbfaff;
+}
+
+/* ---------- Formula box ---------- */
+
+.formula-box {
+  background: #f4f5f7;
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  padding: 8px 12px;
+  font-family: var(--font-mono);
+  font-size: 0.82rem;
+  margin-bottom: 6px;
+  overflow-x: auto;
+}
+
+.formula-line {
+  white-space: pre-wrap;
+}
+
+.formula-definition {
+  color: var(--color-text-muted);
+}
+
+.formula-substitution {
+  color: var(--color-text);
+}
+
+.formula-result {
+  color: var(--color-accent);
+  font-weight: 700;
+}
+
+/* ---------- Tooltip ---------- */
+
+.info-tip {
+  position: relative;
+  display: inline-flex;
+  cursor: help;
+}
+
+.info-tip-icon {
+  color: var(--color-text-muted);
+  font-size: 0.85em;
+}
+
+.info-tip-text {
+  position: absolute;
+  bottom: 130%;
+  left: 50%;
+  transform: translateX(-50%);
+  background: #1a1d23;
+  color: white;
+  font-size: 0.78rem;
+  font-weight: 400;
+  padding: 8px 10px;
+  border-radius: 6px;
+  width: 240px;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.12s ease;
+  z-index: 5;
+  line-height: 1.4;
+}
+
+.info-tip:hover .info-tip-text,
+.info-tip:focus .info-tip-text {
+  opacity: 1;
+}
+
+/* ---------- Disclaimers ---------- */
+
+.disclaimer-note {
+  font-size: 0.82rem;
+  color: var(--color-text-muted);
+  margin: 6px 0 0;
+}
+
+.disclaimer-banner {
+  background: #fff8e6;
+  border: 1px solid #f0d98c;
+  border-radius: 6px;
+  padding: 10px 12px;
+  font-size: 0.84rem;
+  margin-top: 10px;
+  color: #6b5b12;
+}
+
+.error-banner {
+  background: var(--color-loss-bg);
+  border: 1px solid #f3b4b4;
+  color: var(--color-loss);
+  border-radius: 8px;
+  padding: 10px 14px;
+  font-size: 0.88rem;
+  margin-top: 10px;
+}
+
+.error-banner ul {
+  margin: 6px 0 0;
+  padding-left: 18px;
+}
+
+/* Dims previously-computed results when the current inputs are invalid,
+   so a stale (no-longer-matching) analysis is never mistaken for current. */
+.results-stale {
+  opacity: 0.45;
+  filter: grayscale(40%);
+  pointer-events: none;
+}
+
+/* ---------- Payoff table ---------- */
+
+.table-wrap {
+  overflow-x: auto;
+}
+
+.payoff-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.88rem;
+}
+
+.payoff-table th {
+  text-align: left;
+  border-bottom: 2px solid var(--color-border);
+  padding: 8px 10px;
+  color: var(--color-text-muted);
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.payoff-table td {
+  padding: 7px 10px;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.row-profit {
+  background: var(--color-profit-bg);
+}
+
+.row-loss {
+  background: var(--color-loss-bg);
+}
+
+.row-profit td:last-child {
+  color: var(--color-profit);
+  font-weight: 600;
+}
+
+.row-loss td:last-child {
+  color: var(--color-loss);
+  font-weight: 600;
+}
+
+.row-label {
+  display: inline-block;
+  margin-left: 8px;
+  font-size: 0.72rem;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: 999px;
+  padding: 1px 8px;
+  color: var(--color-text-muted);
+}
+
+/* ---------- Payoff chart ---------- */
+
+.payoff-chart {
+  width: 100%;
+  height: auto;
+  font-family: var(--font-mono);
+}
+
+.chart-line {
+  fill: none;
+  stroke: var(--color-accent);
+  stroke-width: 2.5;
+}
+
+.chart-fill {
+  fill: var(--color-accent);
+  opacity: 0.08;
+}
+
+.chart-zero-line {
+  stroke: var(--color-text-muted);
+  stroke-width: 1;
+  stroke-dasharray: 3 3;
+}
+
+.chart-axis-line {
+  stroke: var(--color-text-muted);
+  stroke-width: 1;
+}
+
+.chart-axis-label {
+  font-size: 10px;
+  fill: var(--color-text-muted);
+}
+
+.chart-axis-sublabel {
+  font-size: 9px;
+  fill: var(--color-text-muted);
+}
+
+.chart-hint-label {
+  font-size: 10px;
+  font-weight: 700;
+}
+
+/* ---------- Distribution / probability engine chart ---------- */
+
+.dist-bar-profit {
+  fill: var(--color-profit);
+  opacity: 0.55;
+}
+
+.dist-bar-loss {
+  fill: var(--color-loss);
+  opacity: 0.55;
+}
+
+.chart-ref-line {
+  stroke: var(--color-text);
+  stroke-width: 1;
+  stroke-dasharray: 4 3;
+  opacity: 0.5;
+}
+
+.chart-ref-line-accent {
+  stroke: var(--color-accent);
+  stroke-width: 1;
+  stroke-dasharray: 4 3;
+  opacity: 0.5;
+}
+
+.chart-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  margin-top: 8px;
+  font-size: 0.8rem;
+  color: var(--color-text-muted);
+}
+
+.legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.legend-swatch {
+  display: inline-block;
+  width: 14px;
+  height: 10px;
+  border-radius: 2px;
+}
+
+.legend-line {
+  background: var(--color-accent);
+  height: 3px;
+  border-radius: 2px;
+}
+
+.distribution-table-details {
+  margin-top: 14px;
+  font-size: 0.88rem;
+}
+
+.distribution-table-details summary {
+  cursor: pointer;
+  font-weight: 600;
+  color: var(--color-text-muted);
+  margin-bottom: 10px;
+}
+
+/* ---------- Trade summary ---------- */
+
+.summary-card {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 4px 24px;
+}
+
+.summary-row {
+  display: flex;
+  justify-content: space-between;
+  border-bottom: 1px solid var(--color-border);
+  padding: 6px 0;
+  font-size: 0.9rem;
+  gap: 12px;
+}
+
+@media (max-width: 640px) {
+  .summary-card {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* ---------- Assumptions footer ---------- */
+
+.assumptions-footer {
+  background: #fbfaff;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  padding: 18px 22px;
+  margin-top: 22px;
+}
+
+.assumptions-footer h3 {
+  margin: 0 0 10px;
+  font-size: 0.95rem;
+}
+
+.assumptions-footer ul {
+  margin: 0;
+  padding-left: 20px;
+  font-size: 0.84rem;
+  color: var(--color-text-muted);
+}
+
+.assumptions-footer li {
+  margin-bottom: 4px;
+}
