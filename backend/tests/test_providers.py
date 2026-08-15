@@ -152,16 +152,16 @@ class TestPlaceholderProviders:
         provider = AlpacaProvider(api_key_id="explicit", api_secret_key="explicit")
         assert provider.api_key_id == "explicit"
 
-    @pytest.mark.parametrize("provider_cls", [MassiveProvider, SchwabProvider])
-    def test_still_fully_placeholder_capabilities_are_not_implemented(self, provider_cls):
-        """MassiveProvider and SchwabProvider have no real integration at
-        all yet -- confirm every optional capability still inherits
-        base.py's NotImplementedError default. AlpacaProvider is excluded
-        here: get_historical_data/get_latest_quote are now real
-        integrations (see test_alpaca_provider.py); only its get_chain()
-        (options) and stream_quotes() remain unimplemented, covered by
-        the tests below and in test_alpaca_provider.py."""
-        provider = provider_cls()
+    def test_schwab_still_fully_placeholder_capabilities_are_not_implemented(self):
+        """SchwabProvider has no real integration at all yet -- confirm
+        every optional capability still inherits base.py's
+        NotImplementedError default. AlpacaProvider and MassiveProvider
+        are excluded here: get_historical_data/get_latest_quote are now
+        real integrations for both (see test_alpaca_provider.py /
+        test_massive_provider.py); only get_chain() (options) and
+        stream_quotes() remain unimplemented for them, covered below and
+        in each provider's dedicated test file."""
+        provider = SchwabProvider()
         with pytest.raises(NotImplementedError):
             provider.get_historical_data()
         with pytest.raises(NotImplementedError):
@@ -169,16 +169,30 @@ class TestPlaceholderProviders:
         with pytest.raises(NotImplementedError):
             provider.stream_quotes()
 
-    def test_alpaca_options_chain_still_not_implemented(self):
-        """get_chain() (options data) is still a placeholder even though
-        equity bars/quotes are now real -- this app's scope for this
-        change was equity data only."""
-        provider = AlpacaProvider(api_key_id="fake", api_secret_key="fake")
+    @pytest.mark.parametrize(
+        "provider_cls,kwargs",
+        [
+            (AlpacaProvider, {"api_key_id": "fake", "api_secret_key": "fake"}),
+            (MassiveProvider, {"api_key": "fake"}),
+        ],
+    )
+    def test_options_chain_still_not_implemented(self, provider_cls, kwargs):
+        """get_chain() (options data) is still a placeholder for both
+        real-equity-data providers -- scope for both integrations was
+        equity data (bars/quotes) only."""
+        provider = provider_cls(**kwargs)
         with pytest.raises(NotImplementedError, match="options-chain"):
             provider.get_chain()
 
-    def test_alpaca_stream_quotes_still_not_implemented(self):
-        provider = AlpacaProvider(api_key_id="fake", api_secret_key="fake")
+    @pytest.mark.parametrize(
+        "provider_cls,kwargs",
+        [
+            (AlpacaProvider, {"api_key_id": "fake", "api_secret_key": "fake"}),
+            (MassiveProvider, {"api_key": "fake"}),
+        ],
+    )
+    def test_stream_quotes_still_not_implemented(self, provider_cls, kwargs):
+        provider = provider_cls(**kwargs)
         with pytest.raises(NotImplementedError):
             provider.stream_quotes()
 

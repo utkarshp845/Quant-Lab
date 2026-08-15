@@ -515,25 +515,32 @@ unchanged v0.1.1 CSV ingestion pipeline. `AlpacaProvider`
 data in v0.1.4 — `get_historical_data()` and `get_latest_quote()` call
 Alpaca's Market Data API v2 for real bars/quotes (default feed `iex`,
 the free tier); its `get_chain()` (options data) is still a
-placeholder, since that's a separate, larger integration. `MassiveProvider`
-and `SchwabProvider` remain full placeholders: structure, credential
-configuration (via `app/config.py` + env vars — see
-`backend/.env.example`), and every method raising `NotImplementedError`
-rather than returning fake data — so selecting one before it's built
-fails loudly instead of silently. `registry.py` maps provider names to
-classes and honors a `MARKET_DATA_PROVIDER` env var, so picking a
-provider is a config change, never a code change in the calculator or
-scanner. What's still missing, and is the actual point of this phase,
-is options-chain data from a live provider — the thing the calculator
-itself actually consumes. The application must not be architected
-around scraping any specific broker's UI (e.g. Thinkorswim) — that's a
-fragile, single implementation of the interface, not the interface
-itself.
+placeholder, since that's a separate, larger integration.
+`MassiveProvider` (`backend/app/providers/massive_provider.py`) — Massive
+is the Polygon.io rebrand — gained the same real **equity** data in
+v0.1.6, against Massive's own REST API (a single `MASSIVE_API_KEY`,
+sent as an `Authorization: Bearer` header); its `get_chain()` is a
+placeholder for the same reason Alpaca's is. `SchwabProvider` remains a
+full placeholder: structure, credential configuration (via
+`app/config.py` + env vars — see `backend/.env.example`), and every
+method raising `NotImplementedError` rather than returning fake data —
+so selecting it before it's built fails loudly instead of silently.
+`registry.py` maps provider names to classes and honors a
+`MARKET_DATA_PROVIDER` env var, so picking a provider is a config
+change, never a code change in the calculator or scanner. What's still
+missing, and is the actual point of this phase, is options-chain data
+from a live provider — the thing the calculator itself actually
+consumes; equity data from Alpaca/Massive isn't wired into any API
+route or the frontend yet either (deliberately kept backend-only for
+now — see the roadmap discussion around v0.1.4/v0.1.6). The application
+must not be architected around scraping any specific broker's UI (e.g.
+Thinkorswim) — that's a fragile, single implementation of the
+interface, not the interface itself.
 
 ```
                   ┌── CSVProvider        (done, v0.1.2 -- options chain)
 MarketDataProvider┤── AlpacaProvider     (v0.1.4 -- equity bars/quotes done; options chain placeholder)
-                  ├── MassiveProvider    (placeholder, v0.1.2)
+                  ├── MassiveProvider    (v0.1.6 -- equity bars/quotes done; options chain placeholder)
                   ├── SchwabProvider     (placeholder, v0.1.2)
                   └── ...
                           │
@@ -818,11 +825,11 @@ meaning of "the provider layer is an adapter": provider code goes from
 API/CSV to normalized data; engine code goes from normalized data to
 calculations; nothing skips the middle step.
 
-**How to add a real live provider** (once you're ready to move one of the
-placeholders — `massive_provider.py`, `schwab_provider.py`, or
-`alpaca_provider.py`'s still-placeholder `get_chain()` — beyond a stub).
-`alpaca_provider.py`'s `get_historical_data()` / `get_latest_quote()` are
-a real, worked example of this exact process (v0.1.4):
+**How to add a real live provider** (once you're ready to move
+`schwab_provider.py`, or `alpaca_provider.py`'s / `massive_provider.py`'s
+still-placeholder `get_chain()`, beyond a stub). Both `alpaca_provider.py`
+and `massive_provider.py`'s `get_historical_data()` / `get_latest_quote()`
+are real, worked examples of this exact process (v0.1.4, v0.1.6):
 
 1. Implement the method(s) that provider supports (`get_chain()` and/or
    `get_historical_data()` / `get_latest_quote()` / `stream_quotes()`) to
@@ -830,17 +837,25 @@ a real, worked example of this exact process (v0.1.4):
    / `MarketBar` / `Quote`. No other file needs to change — not
    `registry.py` (already wired), not the API routes, not the calculator.
    Confirm the provider's actual endpoint/field names against its
-   published API reference rather than guessing — AlpacaProvider's
-   module docstring names exactly which docs pages were checked.
-2. Make the HTTP client an injectable constructor argument (see
-   `AlpacaProvider.__init__`'s `client` parameter) so tests can supply a
-   mocked transport (`httpx.MockTransport`) instead of making real
-   network calls with real credentials.
+   published API reference rather than guessing — both providers'
+   module docstrings name exactly which docs pages were checked, and
+   `massive_provider.py`'s also documents two easy-to-transpose details
+   (millisecond vs. nanosecond timestamps on different endpoints;
+   case-sensitive bid/ask field names) that a second, independent
+   implementation was useful for catching early.
+2. Make the HTTP client an injectable constructor argument (see either
+   provider's `client` parameter) so tests can supply a mocked transport
+   (`httpx.MockTransport`) instead of making real network calls with
+   real credentials.
 3. Add tests against that mocked transport covering: successful parsing,
-   the credentials-missing path raising before any request is sent, and
-   an HTTP error propagating rather than being silently swallowed — see
-   `tests/test_alpaca_provider.py`.
-4. Update this README's Phase 4 entry and this section to say the
+   the credentials-missing path raising before any request is sent, an
+   HTTP error propagating rather than being silently swallowed, and any
+   unit-conversion or field-mapping detail that could silently transpose
+   — see `tests/test_alpaca_provider.py` and `tests/test_massive_provider.py`.
+4. If you want to sanity-check it against your own real account outside
+   the test suite, add a manual (non-pytest, opt-in) script like
+   `scripts/alpaca_manual_check.py` / `scripts/massive_manual_check.py`.
+5. Update this README's Phase 4 entry and this section to say the
    provider (or that specific method) is real, not a placeholder.
 
 **How credentials are handled.** `app/config.py` is the only module that
@@ -890,7 +905,8 @@ backend/
       csv_provider.py              CSVProvider -- thin wrapper around ingestion/csv_normalizer.py
       alpaca_provider.py           v0.1.4: real get_historical_data/get_latest_quote (equity bars/
                                     quotes, Alpaca Market Data API v2); get_chain (options) still a stub
-      massive_provider.py          v0.1.2: placeholder -- structure + config, no live integration
+      massive_provider.py          v0.1.6: real get_historical_data/get_latest_quote (equity bars/
+                                    quotes, Massive/Polygon.io REST API); get_chain (options) still a stub
       schwab_provider.py           v0.1.2: placeholder -- structure + config, no live integration
       registry.py                  Provider-name -> class map + MARKET_DATA_PROVIDER-driven default
     api/
@@ -899,6 +915,7 @@ backend/
   scripts/
     alpaca_manual_check.py         v0.1.4: opt-in, NOT run by pytest -- hits the real Alpaca API with
                                     your own credentials to sanity-check TSLA/NVDA bars + quotes
+    massive_manual_check.py        v0.1.6: same idea, against the real Massive API
   tests/
     test_calculations.py           Pure-function unit tests + graduation example
     test_validation.py             Input validation tests
@@ -911,6 +928,8 @@ backend/
                                     selection, and a check that the engine imports neither
                                     app.providers nor app.ingestion
     test_alpaca_provider.py        v0.1.4: mocked-HTTP tests for real Alpaca bars/quotes (TSLA/NVDA)
+    test_massive_provider.py       v0.1.6: mocked-HTTP tests for real Massive bars/quotes (TSLA/NVDA),
+                                    incl. explicit ms-vs-ns timestamp and bid/ask-case regression tests
     test_config.py                 v0.1.2: MARKET_DATA_PROVIDER + credential env-var reading
     fixtures/sample_thinkorswim_chain.csv  v0.1.1: example chain export
   requirements.txt
