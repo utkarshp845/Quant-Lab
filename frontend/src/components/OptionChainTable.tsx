@@ -87,18 +87,18 @@ export function OptionChainTable({
                       className={`chain-select-btn ${isLong ? "chain-select-btn-active-buy" : ""}`}
                       disabled={optionType !== "put"}
                       onClick={() => onSetLong(c)}
-                      title={optionType !== "put" ? "Only puts can be selected in v0.1.1" : undefined}
+                      title={optionType !== "put" ? "Only puts can be selected in v0.1.1" : "Buy this put (long leg)"}
                     >
-                      {isLong ? "Long ✓" : "Set Long"}
+                      {isLong ? "BUY ✓" : "BUY"}
                     </button>
                     <button
                       type="button"
                       className={`chain-select-btn ${isShort ? "chain-select-btn-active-sell" : ""}`}
                       disabled={optionType !== "put"}
                       onClick={() => onSetShort(c)}
-                      title={optionType !== "put" ? "Only puts can be selected in v0.1.1" : undefined}
+                      title={optionType !== "put" ? "Only puts can be selected in v0.1.1" : "Sell this put (short leg)"}
                     >
-                      {isShort ? "Short ✓" : "Set Short"}
+                      {isShort ? "SELL ✓" : "SELL"}
                     </button>
                   </td>
                 </tr>
