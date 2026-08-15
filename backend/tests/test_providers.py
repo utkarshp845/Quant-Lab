@@ -152,17 +152,33 @@ class TestPlaceholderProviders:
         provider = AlpacaProvider(api_key_id="explicit", api_secret_key="explicit")
         assert provider.api_key_id == "explicit"
 
-    @pytest.mark.parametrize("provider_cls", [AlpacaProvider, MassiveProvider, SchwabProvider])
-    def test_optional_capabilities_are_not_implemented_yet(self, provider_cls):
-        """get_historical_data/get_latest_quote/stream_quotes are
-        optional on the interface (base.py) -- confirm the placeholders
-        inherit that default rather than accidentally implementing one
-        with fake behavior."""
+    @pytest.mark.parametrize("provider_cls", [MassiveProvider, SchwabProvider])
+    def test_still_fully_placeholder_capabilities_are_not_implemented(self, provider_cls):
+        """MassiveProvider and SchwabProvider have no real integration at
+        all yet -- confirm every optional capability still inherits
+        base.py's NotImplementedError default. AlpacaProvider is excluded
+        here: get_historical_data/get_latest_quote are now real
+        integrations (see test_alpaca_provider.py); only its get_chain()
+        (options) and stream_quotes() remain unimplemented, covered by
+        the tests below and in test_alpaca_provider.py."""
         provider = provider_cls()
         with pytest.raises(NotImplementedError):
             provider.get_historical_data()
         with pytest.raises(NotImplementedError):
             provider.get_latest_quote()
+        with pytest.raises(NotImplementedError):
+            provider.stream_quotes()
+
+    def test_alpaca_options_chain_still_not_implemented(self):
+        """get_chain() (options data) is still a placeholder even though
+        equity bars/quotes are now real -- this app's scope for this
+        change was equity data only."""
+        provider = AlpacaProvider(api_key_id="fake", api_secret_key="fake")
+        with pytest.raises(NotImplementedError, match="options-chain"):
+            provider.get_chain()
+
+    def test_alpaca_stream_quotes_still_not_implemented(self):
+        provider = AlpacaProvider(api_key_id="fake", api_secret_key="fake")
         with pytest.raises(NotImplementedError):
             provider.stream_quotes()
 

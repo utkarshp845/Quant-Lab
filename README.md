@@ -493,23 +493,29 @@ v0.1.2 built exactly that seam: `MarketDataProvider`
 implements, returning one common `NormalizedChainResult` regardless of
 how the data arrived. `CSVProvider` (`backend/app/providers/csv_provider.py`)
 is the first, fully working implementation — a thin wrapper around the
-unchanged v0.1.1 CSV ingestion pipeline. `AlpacaProvider`,
-`MassiveProvider`, and `SchwabProvider` exist as **placeholders**:
-structure, credential configuration (via `app/config.py` + env vars —
-see `backend/.env.example`), and a `get_chain()` that raises
-`NotImplementedError` rather than returning fake data — so selecting one
-before it's built fails loudly instead of silently. `registry.py` maps
-provider names to classes and honors a `MARKET_DATA_PROVIDER` env var,
-so picking a provider is a config change, never a code change in the
-calculator or scanner. What's still missing, and is the actual point of
-this phase, is a *real* implementation behind one of those three
-placeholders. The application must not be architected around scraping
-any specific broker's UI (e.g. Thinkorswim) — that's a fragile, single
-implementation of the interface, not the interface itself.
+unchanged v0.1.1 CSV ingestion pipeline. `AlpacaProvider`
+(`backend/app/providers/alpaca_provider.py`) gained real **equity**
+data in v0.1.4 — `get_historical_data()` and `get_latest_quote()` call
+Alpaca's Market Data API v2 for real bars/quotes (default feed `iex`,
+the free tier); its `get_chain()` (options data) is still a
+placeholder, since that's a separate, larger integration. `MassiveProvider`
+and `SchwabProvider` remain full placeholders: structure, credential
+configuration (via `app/config.py` + env vars — see
+`backend/.env.example`), and every method raising `NotImplementedError`
+rather than returning fake data — so selecting one before it's built
+fails loudly instead of silently. `registry.py` maps provider names to
+classes and honors a `MARKET_DATA_PROVIDER` env var, so picking a
+provider is a config change, never a code change in the calculator or
+scanner. What's still missing, and is the actual point of this phase,
+is options-chain data from a live provider — the thing the calculator
+itself actually consumes. The application must not be architected
+around scraping any specific broker's UI (e.g. Thinkorswim) — that's a
+fragile, single implementation of the interface, not the interface
+itself.
 
 ```
-                  ┌── CSVProvider        (done, v0.1.2)
-MarketDataProvider┤── AlpacaProvider     (placeholder, v0.1.2)
+                  ┌── CSVProvider        (done, v0.1.2 -- options chain)
+MarketDataProvider┤── AlpacaProvider     (v0.1.4 -- equity bars/quotes done; options chain placeholder)
                   ├── MassiveProvider    (placeholder, v0.1.2)
                   ├── SchwabProvider     (placeholder, v0.1.2)
                   └── ...
@@ -796,19 +802,29 @@ API/CSV to normalized data; engine code goes from normalized data to
 calculations; nothing skips the middle step.
 
 **How to add a real live provider** (once you're ready to move one of the
-three placeholders — `alpaca_provider.py`, `massive_provider.py`,
-`schwab_provider.py` — beyond a stub):
+placeholders — `massive_provider.py`, `schwab_provider.py`, or
+`alpaca_provider.py`'s still-placeholder `get_chain()` — beyond a stub).
+`alpaca_provider.py`'s `get_historical_data()` / `get_latest_quote()` are
+a real, worked example of this exact process (v0.1.4):
 
-1. Implement that provider's `get_chain()` (and `get_historical_data()` /
-   `get_latest_quote()` / `stream_quotes()`, if that source supports them)
-   to call the real API and map its response fields onto `NormalizedOption`
+1. Implement the method(s) that provider supports (`get_chain()` and/or
+   `get_historical_data()` / `get_latest_quote()` / `stream_quotes()`) to
+   call the real API and map its response fields onto `NormalizedOption`
    / `MarketBar` / `Quote`. No other file needs to change — not
    `registry.py` (already wired), not the API routes, not the calculator.
-2. Add real integration tests that mock the HTTP layer (no live network
-   calls, no real credentials, in the test suite) — following the pattern
-   already used for CSVProvider's tests.
-3. Update this README's Phase 4 entry and this section to say the
-   provider is real, not a placeholder.
+   Confirm the provider's actual endpoint/field names against its
+   published API reference rather than guessing — AlpacaProvider's
+   module docstring names exactly which docs pages were checked.
+2. Make the HTTP client an injectable constructor argument (see
+   `AlpacaProvider.__init__`'s `client` parameter) so tests can supply a
+   mocked transport (`httpx.MockTransport`) instead of making real
+   network calls with real credentials.
+3. Add tests against that mocked transport covering: successful parsing,
+   the credentials-missing path raising before any request is sent, and
+   an HTTP error propagating rather than being silently swallowed — see
+   `tests/test_alpaca_provider.py`.
+4. Update this README's Phase 4 entry and this section to say the
+   provider (or that specific method) is real, not a placeholder.
 
 **How credentials are handled.** `app/config.py` is the only module that
 reads `os.environ` directly — every provider takes credentials as
@@ -855,13 +871,17 @@ backend/
       base.py                      MarketDataProvider ABC + NormalizedChainResult; optional capability
                                     methods (get_historical_data/get_latest_quote/stream_quotes)
       csv_provider.py              CSVProvider -- thin wrapper around ingestion/csv_normalizer.py
-      alpaca_provider.py           v0.1.2: placeholder -- structure + config, no live integration
+      alpaca_provider.py           v0.1.4: real get_historical_data/get_latest_quote (equity bars/
+                                    quotes, Alpaca Market Data API v2); get_chain (options) still a stub
       massive_provider.py          v0.1.2: placeholder -- structure + config, no live integration
       schwab_provider.py           v0.1.2: placeholder -- structure + config, no live integration
       registry.py                  Provider-name -> class map + MARKET_DATA_PROVIDER-driven default
     api/
       bear_put_spread.py           Route handlers, calls calculations in sequence
       csv_import.py                Upload -> CSVProvider.get_chain() -> return chain (no analysis math)
+  scripts/
+    alpaca_manual_check.py         v0.1.4: opt-in, NOT run by pytest -- hits the real Alpaca API with
+                                    your own credentials to sanity-check TSLA/NVDA bars + quotes
   tests/
     test_calculations.py           Pure-function unit tests + graduation example
     test_validation.py             Input validation tests
@@ -873,6 +893,7 @@ backend/
     test_providers.py              v0.1.2: interface conformance, placeholders, config-driven
                                     selection, and a check that the engine imports neither
                                     app.providers nor app.ingestion
+    test_alpaca_provider.py        v0.1.4: mocked-HTTP tests for real Alpaca bars/quotes (TSLA/NVDA)
     test_config.py                 v0.1.2: MARKET_DATA_PROVIDER + credential env-var reading
     fixtures/sample_thinkorswim_chain.csv  v0.1.1: example chain export
   requirements.txt
