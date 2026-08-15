@@ -17,3 +17,6 @@ frontend/*.tsbuildinfo
 # Editors / OS
 .DS_Store
 .vscode/
+
+# scripts/dev.sh PID files and logs
+.dev/
