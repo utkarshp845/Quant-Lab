@@ -4,34 +4,12 @@ import type { CsvImportResponse, NormalizedOption } from "../types/csvImport";
 import type { BearPutSpreadFormState } from "../types/form";
 import { OptionChainTable } from "./OptionChainTable";
 import { SpreadBuilderPreview } from "./SpreadBuilderPreview";
+import { SpreadScanner } from "./SpreadScanner";
+import { optionToFormState } from "../utils/optionToFormState";
 import { fmtUsd } from "../utils/format";
 
 interface CsvImportWorkflowProps {
   onApply: (formState: BearPutSpreadFormState) => void;
-}
-
-function optionToFormState(long: NormalizedOption, short: NormalizedOption): BearPutSpreadFormState {
-  return {
-    underlying: {
-      symbol: long.symbol,
-      price: String(long.underlying_price),
-      dte: String(long.dte),
-    },
-    longPut: {
-      strike: String(long.strike),
-      bid: String(long.bid),
-      ask: String(long.ask),
-      delta: String(long.delta),
-      ivPercent: String(long.implied_volatility * 100),
-    },
-    shortPut: {
-      strike: String(short.strike),
-      bid: String(short.bid),
-      ask: String(short.ask),
-      delta: String(short.delta),
-      ivPercent: String(short.implied_volatility * 100),
-    },
-  };
 }
 
 /**
@@ -58,6 +36,7 @@ export function CsvImportWorkflow({ onApply }: CsvImportWorkflowProps) {
   const [optionType, setOptionType] = useState<"put" | "call">("put");
   const [selectedLong, setSelectedLong] = useState<NormalizedOption | null>(null);
   const [selectedShort, setSelectedShort] = useState<NormalizedOption | null>(null);
+  const [browseMode, setBrowseMode] = useState<"chain" | "scanner">("chain");
 
   const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -91,6 +70,15 @@ export function CsvImportWorkflow({ onApply }: CsvImportWorkflowProps) {
       (c) => c.symbol === selectedSymbol && c.expiration === selectedExpiration,
     );
   }, [importResult, selectedSymbol, selectedExpiration]);
+
+  // The scanner spans every expiration for the symbol, not just the
+  // one picked above -- a bear put spread's legs must share an
+  // expiration, but which expiration is exactly what a scan should be
+  // free to search across.
+  const contractsForSymbol = useMemo(() => {
+    if (!importResult || !selectedSymbol) return [];
+    return importResult.contracts.filter((c) => c.symbol === selectedSymbol);
+  }, [importResult, selectedSymbol]);
 
   // Underlying price and DTE are the same across every row in one
   // symbol+expiration group, so the first row's values are the
@@ -192,7 +180,30 @@ export function CsvImportWorkflow({ onApply }: CsvImportWorkflowProps) {
             )}
           </div>
 
-          {contextInfo && (
+          {selectedSymbol && (
+            <div className="input-mode-toggle" role="tablist" aria-label="Browse mode">
+              <button
+                type="button"
+                role="tab"
+                aria-selected={browseMode === "chain"}
+                className={browseMode === "chain" ? "mode-tab mode-tab-active" : "mode-tab"}
+                onClick={() => setBrowseMode("chain")}
+              >
+                Browse Chain
+              </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={browseMode === "scanner"}
+                className={browseMode === "scanner" ? "mode-tab mode-tab-active" : "mode-tab"}
+                onClick={() => setBrowseMode("scanner")}
+              >
+                Scan Combinations
+              </button>
+            </div>
+          )}
+
+          {browseMode === "chain" && contextInfo && (
             <div className="chain-context-header">
               <span className="chain-context-symbol">{contextInfo.symbol}</span>
               <span className="chain-context-price">{fmtUsd(contextInfo.underlying_price)}</span>
@@ -200,7 +211,7 @@ export function CsvImportWorkflow({ onApply }: CsvImportWorkflowProps) {
             </div>
           )}
 
-          {contractsForExpiration.length > 0 && (
+          {browseMode === "chain" && contractsForExpiration.length > 0 && (
             <>
               <OptionChainTable
                 contracts={contractsForExpiration}
@@ -248,6 +259,10 @@ export function CsvImportWorkflow({ onApply }: CsvImportWorkflowProps) {
                 </button>
               </div>
             </>
+          )}
+
+          {browseMode === "scanner" && contractsForSymbol.length > 0 && (
+            <SpreadScanner contracts={contractsForSymbol} onApply={onApply} />
           )}
         </>
       )}

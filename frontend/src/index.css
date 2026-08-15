@@ -297,6 +297,51 @@ body {
   padding: 14px;
 }
 
+/* ---------- Spread scanner ---------- */
+
+.scanner {
+  margin-top: 8px;
+}
+
+.scanner-filters {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 10px 14px;
+  align-items: end;
+  margin-bottom: 12px;
+}
+
+@media (max-width: 780px) {
+  .scanner-filters {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+
+.scanner-filters .field {
+  margin-bottom: 0;
+}
+
+.scanner-table th,
+.scanner-table td {
+  text-align: right;
+}
+
+.scanner-table th:first-child,
+.scanner-table td:first-child,
+.scanner-table th:nth-child(2),
+.scanner-table td:nth-child(2) {
+  text-align: left;
+}
+
+.scanner-sortable {
+  cursor: pointer;
+  user-select: none;
+}
+
+.scanner-sortable:hover {
+  color: var(--color-accent);
+}
+
 .csv-selection-summary {
   margin-top: 16px;
 }
