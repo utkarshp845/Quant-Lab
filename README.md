@@ -90,6 +90,23 @@ npm run dev
 Open `http://localhost:5173`. The frontend expects the backend to be
 running at `http://localhost:8000` (see `frontend/src/api/client.ts`).
 
+**Or run both together with one command** (after installing dependencies
+per section 3, once, the normal way): `scripts/dev.sh` wraps the two
+commands above under a single start/stop/restart/status interface, so you
+don't need two terminal tabs:
+
+```bash
+./scripts/dev.sh start     # starts backend (:8000) and frontend (:5173)
+./scripts/dev.sh status    # what's running, and where the logs are
+./scripts/dev.sh stop      # stops both
+./scripts/dev.sh restart   # stop then start
+```
+
+PID files and logs live in `.dev/` (gitignored) at the repo root. This
+is a convenience wrapper, not a production deployment mechanism — it
+runs the exact same `uvicorn --reload` / `npm run dev` dev servers
+described above, just backgrounded and PID-tracked.
+
 ## 6. Example inputs
 
 The calculator is pre-populated with this hypothetical setup on load:
@@ -920,6 +937,8 @@ frontend/
       SpreadScanner.tsx            v0.1.1: tiny scanner UI -- filters, sortable results, Analyze
     pages/CalculatorPage.tsx       Composes the page, owns form state
     App.tsx, main.tsx, index.css
+scripts/
+  dev.sh                          v0.1.5: start/stop/restart/status for backend + frontend together
 ```
 
 ## Known limitations
