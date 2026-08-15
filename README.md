@@ -532,8 +532,18 @@ automatically, no network call happens except reading the file you chose,
 and the file never leaves your machine except to your own local backend.
 
 **Workflow:** Upload CSV → select expiration → select long put → select
-short put → Analyze Spread. Clicking Analyze Spread populates the exact
-same manual-entry form fields the rest of the app already uses (see
+short put → Analyze Spread. As soon as both legs are picked, a **Spread
+Builder** preview card appears instantly above the chain (Debit, Max Loss,
+Max Profit, Breakeven, Delta) — computed client-side, live, with no network
+call, using the same TypeScript formula mirror the rest of the app already
+has (`frontend/src/calculations/bearPutSpread.ts`). The point is the
+"constructing an instrument from the chain in front of you" feel: click BUY
+on one strike, SELL on another, and watch the spread's numbers appear —
+rather than filling out a form and pressing a button to find out what you
+built. Clicking Analyze Spread still exists for the full transparent,
+formula-by-formula breakdown (Trade Structure through Monte Carlo): it
+populates the exact same manual-entry form fields the rest of the app
+already uses (see
 `frontend/src/components/CsvImportWorkflow.tsx::optionToFormState`) and
 switches back to the Manual Entry tab, pre-filled and still editable —
 from that point on, CSV-derived and hand-typed inputs are indistinguishable
@@ -650,6 +660,7 @@ frontend/
       MonteCarloHistogramChart.tsx Phase 3: empirical outcome histogram
       CsvImportWorkflow.tsx        v0.1.1: upload -> select -> Analyze Spread
       OptionChainTable.tsx         v0.1.1: chain table with call/put filter + long/short selection
+      SpreadBuilderPreview.tsx     v0.1.1: instant client-side Debit/Max Loss/Profit/Breakeven/Delta
     pages/CalculatorPage.tsx       Composes the page, owns form state
     App.tsx, main.tsx, index.css
 ```

@@ -3,7 +3,8 @@ import { ApiError, importCsv } from "../api/client";
 import type { CsvImportResponse, NormalizedOption } from "../types/csvImport";
 import type { BearPutSpreadFormState } from "../types/form";
 import { OptionChainTable } from "./OptionChainTable";
-import { fmtPercent, fmtUsd } from "../utils/format";
+import { SpreadBuilderPreview } from "./SpreadBuilderPreview";
+import { fmtUsd } from "../utils/format";
 
 interface CsvImportWorkflowProps {
   onApply: (formState: BearPutSpreadFormState) => void;
@@ -39,6 +40,12 @@ function optionToFormState(long: NormalizedOption, short: NormalizedOption): Bea
  * single call to `onApply` with a normal BearPutSpreadFormState --
  * from that point on, CSV-derived and manually-typed inputs are
  * indistinguishable to the rest of the app (see CalculatorPage.tsx).
+ *
+ * As soon as both legs are picked, a SpreadBuilderPreview appears
+ * instantly (client-side, no network call) -- the "Spread Builder":
+ * you're not entering a trade into a calculator, you're constructing
+ * an instrument from the chain in front of you. "Analyze Spread"
+ * still exists for the full transparent, formula-by-formula analysis.
  */
 export function CsvImportWorkflow({ onApply }: CsvImportWorkflowProps) {
   const [uploading, setUploading] = useState(false);
@@ -84,6 +91,11 @@ export function CsvImportWorkflow({ onApply }: CsvImportWorkflowProps) {
       (c) => c.symbol === selectedSymbol && c.expiration === selectedExpiration,
     );
   }, [importResult, selectedSymbol, selectedExpiration]);
+
+  // Underlying price and DTE are the same across every row in one
+  // symbol+expiration group, so the first row's values are the
+  // group's values -- used for the "MCL $82.00 30 DTE" context header.
+  const contextInfo = contractsForExpiration[0] ?? null;
 
   const strikeOrderValid =
     selectedLong && selectedShort ? selectedLong.strike > selectedShort.strike : null;
@@ -180,6 +192,14 @@ export function CsvImportWorkflow({ onApply }: CsvImportWorkflowProps) {
             )}
           </div>
 
+          {contextInfo && (
+            <div className="chain-context-header">
+              <span className="chain-context-symbol">{contextInfo.symbol}</span>
+              <span className="chain-context-price">{fmtUsd(contextInfo.underlying_price)}</span>
+              <span className="chain-context-dte">{contextInfo.dte} DTE</span>
+            </div>
+          )}
+
           {contractsForExpiration.length > 0 && (
             <>
               <OptionChainTable
@@ -193,28 +213,9 @@ export function CsvImportWorkflow({ onApply }: CsvImportWorkflowProps) {
               />
 
               <div className="csv-selection-summary">
-                <div className="structure-row">
-                  <div className="structure-leg accent-buy">
-                    <span className="badge badge-buy">BUY</span>
-                    <div>{selectedLong ? `Long Put, Strike $${selectedLong.strike}` : "No long put selected"}</div>
-                    {selectedLong && (
-                      <div className="structure-price">
-                        Bid {fmtUsd(selectedLong.bid)} / Ask {fmtUsd(selectedLong.ask)} / Delta{" "}
-                        {selectedLong.delta.toFixed(2)} / IV {fmtPercent(selectedLong.implied_volatility, 1)}
-                      </div>
-                    )}
-                  </div>
-                  <div className="structure-leg accent-sell">
-                    <span className="badge badge-sell">SELL</span>
-                    <div>{selectedShort ? `Short Put, Strike $${selectedShort.strike}` : "No short put selected"}</div>
-                    {selectedShort && (
-                      <div className="structure-price">
-                        Bid {fmtUsd(selectedShort.bid)} / Ask {fmtUsd(selectedShort.ask)} / Delta{" "}
-                        {selectedShort.delta.toFixed(2)} / IV {fmtPercent(selectedShort.implied_volatility, 1)}
-                      </div>
-                    )}
-                  </div>
-                </div>
+                {selectedLong && selectedShort && strikeOrderValid && (
+                  <SpreadBuilderPreview long={selectedLong} short={selectedShort} />
+                )}
 
                 {selectedLong && selectedShort && !strikeOrderValid && (
                   <div className="error-banner">
@@ -222,6 +223,16 @@ export function CsvImportWorkflow({ onApply }: CsvImportWorkflowProps) {
                     than the short put strike (${selectedShort.strike}). Pick a higher strike for the long
                     put, or a lower strike for the short put.
                   </div>
+                )}
+
+                {!(selectedLong && selectedShort) && (
+                  <p className="disclaimer-note">
+                    {selectedLong
+                      ? "Now click SELL on a lower strike to complete the spread."
+                      : selectedShort
+                        ? "Now click BUY on a higher strike to complete the spread."
+                        : "Click BUY on one strike and SELL on a lower strike to build a bear put spread."}
+                  </p>
                 )}
 
                 <button
