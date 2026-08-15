@@ -484,30 +484,34 @@ model, 47.2% of simulated outcomes were profitable," never "there's a 47%
 chance of profit."
 
 **Phase 4 — Real options data.** *(the abstraction layer landed in
-v0.1.2 — see below; a live data source has not, and isn't planned as an
-immediate next step)* Replace manual entry with a real market data
-source, architected so the *source* is swappable and never load-bearing
-for the rest of the app. v0.1.2 built exactly that seam:
-`MarketDataProvider` (`backend/app/providers/base.py`) is an interface
-every source implements, returning one common `NormalizedChainResult`
-regardless of how the data arrived. `CSVProvider`
-(`backend/app/providers/csv_provider.py`) is the first implementation —
-a thin wrapper around the unchanged v0.1.1 CSV ingestion pipeline, so
-nothing about CSV import's behavior changed, only what now stands in
-front of it. `registry.py` maps provider names to classes, so adding a
-live provider later (Schwab, Alpaca, etc.) means one new file plus one
-new registry entry — never touching this interface, the API routes, or
-anything downstream of `NormalizedChainResult`. What's still missing,
-and is the actual point of this phase, is an implementation of that
-interface backed by a live data source. The application must not be
-architected around scraping any specific broker's UI (e.g. Thinkorswim)
-— that's a fragile, single implementation of the interface, not the
-interface itself.
+v0.1.2 — see below and [§13](#13-market-data-provider-architecture-v012);
+a live data source has not, and isn't planned as an immediate next step)*
+Replace manual entry with a real market data source, architected so the
+*source* is swappable and never load-bearing for the rest of the app.
+v0.1.2 built exactly that seam: `MarketDataProvider`
+(`backend/app/providers/base.py`) is an interface every source
+implements, returning one common `NormalizedChainResult` regardless of
+how the data arrived. `CSVProvider` (`backend/app/providers/csv_provider.py`)
+is the first, fully working implementation — a thin wrapper around the
+unchanged v0.1.1 CSV ingestion pipeline. `AlpacaProvider`,
+`MassiveProvider`, and `SchwabProvider` exist as **placeholders**:
+structure, credential configuration (via `app/config.py` + env vars —
+see `backend/.env.example`), and a `get_chain()` that raises
+`NotImplementedError` rather than returning fake data — so selecting one
+before it's built fails loudly instead of silently. `registry.py` maps
+provider names to classes and honors a `MARKET_DATA_PROVIDER` env var,
+so picking a provider is a config change, never a code change in the
+calculator or scanner. What's still missing, and is the actual point of
+this phase, is a *real* implementation behind one of those three
+placeholders. The application must not be architected around scraping
+any specific broker's UI (e.g. Thinkorswim) — that's a fragile, single
+implementation of the interface, not the interface itself.
 
 ```
                   ┌── CSVProvider        (done, v0.1.2)
-MarketDataProvider┤── SchwabProvider     (future)
-                  ├── AlpacaProvider     (future)
+MarketDataProvider┤── AlpacaProvider     (placeholder, v0.1.2)
+                  ├── MassiveProvider    (placeholder, v0.1.2)
+                  ├── SchwabProvider     (placeholder, v0.1.2)
                   └── ...
                           │
                           ▼
@@ -733,6 +737,95 @@ in this app: the software finds structures matching a hypothesis you
 define, and you investigate them, exactly as described in the Phase 5
 roadmap entry below.
 
+## 13. Market data provider architecture (v0.1.2)
+
+**Why this exists.** Every earlier version of this app had exactly one
+way to get option data in: type it by hand, or upload a CSV. Phase 4 of
+the roadmap calls for real market data eventually, from more than one
+possible source (Alpaca, Massive, Schwab, ...). Rather than wire a
+specific API's response shape into the calculator, `backend/app/providers/`
+puts one interface — `MarketDataProvider` — between every data source and
+the rest of the app, so the calculator, the scanner, and any future phase
+never need to know or care whether a number came from a spreadsheet or a
+live broker feed.
+
+**Provider responsibilities** (`app/providers/*.py`): fetch data however
+that source works (parse a CSV, call a REST API, eventually stream a
+websocket), and translate it into this app's normalized shapes —
+`NormalizedChainResult` / `NormalizedOption` (`app/models/option_chain.py`)
+for an options chain, and `MarketBar` / `Quote` / `MarketTimestamp`
+(`app/models/market_data.py`) for historical bars and live underlying
+quotes. A provider owns everything source-specific: column-name aliases
+for a CSV, an API's auth scheme, its rate limits, its own response field
+names. None of that is allowed to leak past the provider's `get_chain()` /
+`get_historical_data()` / `get_latest_quote()` / `stream_quotes()` return
+values.
+
+**Quant engine responsibilities** (`app/calculations/`, `app/models/bear_put_spread.py`,
+`app/api/bear_put_spread.py`): take a `BearPutSpreadRequest` — plain
+floats (strike, bid, ask, delta, IV) — and compute. This code has zero
+imports from `app/providers/` or `app/ingestion/` (checked by
+`tests/test_providers.py::TestEngineHasNoCsvDependency`, which fails the
+build if that ever stops being true). It was already true before this
+provider layer existed — v0.1.1's CSV import built a `BearPutSpreadRequest`
+from imported contracts exactly the way manual entry does, proven by
+`test_csv_import_api.py::test_csv_derived_request_matches_manual_entry` —
+this phase's job was giving that separation a named interface, not
+inventing it.
+
+**Data flow, end to end:**
+
+```
+Provider (CSV today; Alpaca/Massive/Schwab as real integrations land)
+        │  parses/fetches source-specific data
+        ▼
+NormalizedChainResult / NormalizedOption   (app/models/option_chain.py)
+        │  frontend picks two legs, builds a BearPutSpreadRequest
+        ▼
+BearPutSpreadRequest                        (app/models/bear_put_spread.py)
+        │  posted to /api/bear-put-spread
+        ▼
+Quant engine (app/calculations/*.py)  →  debit, max loss/profit, breakeven,
+                                          probability engine, Monte Carlo
+```
+
+The engine never sees a provider or a `NormalizedOption` — only the
+already-validated floats in a `BearPutSpreadRequest`. That's the actual
+meaning of "the provider layer is an adapter": provider code goes from
+API/CSV to normalized data; engine code goes from normalized data to
+calculations; nothing skips the middle step.
+
+**How to add a real live provider** (once you're ready to move one of the
+three placeholders — `alpaca_provider.py`, `massive_provider.py`,
+`schwab_provider.py` — beyond a stub):
+
+1. Implement that provider's `get_chain()` (and `get_historical_data()` /
+   `get_latest_quote()` / `stream_quotes()`, if that source supports them)
+   to call the real API and map its response fields onto `NormalizedOption`
+   / `MarketBar` / `Quote`. No other file needs to change — not
+   `registry.py` (already wired), not the API routes, not the calculator.
+2. Add real integration tests that mock the HTTP layer (no live network
+   calls, no real credentials, in the test suite) — following the pattern
+   already used for CSVProvider's tests.
+3. Update this README's Phase 4 entry and this section to say the
+   provider is real, not a placeholder.
+
+**How credentials are handled.** `app/config.py` is the only module that
+reads `os.environ` directly — every provider takes credentials as
+constructor arguments, defaulting to `config.get_provider_credential(...)`
+if not passed explicitly (see `alpaca_provider.py` etc.). This means: (a)
+tests can pass fake credentials without touching the environment, (b)
+there's exactly one place to check for how a secret reaches the app, and
+(c) a missing credential raises a clear `RuntimeError` naming the expected
+env var — see `backend/.env.example` for the full list — rather than a
+provider silently authenticating with `None` or an empty string. Real
+credentials belong in a local, gitignored `backend/.env` (or your shell
+environment) — never committed, never pasted into a chat transcript, never
+hardcoded in a provider file. `MARKET_DATA_PROVIDER` selects which
+provider `registry.get_default_provider()` returns; the CSV upload route
+(`/api/csv-import`) always uses `"csv"` explicitly regardless of this
+setting, since there's nothing to "configure" about uploading a file.
+
 ---
 
 ## Project structure
@@ -741,11 +834,13 @@ roadmap entry below.
 backend/
   app/
     main.py                        FastAPI app, CORS, router mount
+    config.py                      v0.1.2: the app's one os.environ touchpoint (provider selection + credentials)
     models/
       bear_put_spread.py           Input models + validation
       response.py                  Response models (formulas embedded)
       monte_carlo.py               Phase 3: simulation request/response models
       option_chain.py              v0.1.1: NormalizedOption + CSV import response models
+      market_data.py               v0.1.2: MarketBar/Quote/MarketTimestamp -- unused by CSV path today
     calculations/
       stats.py                     normal_cdf
       bear_put_spread.py           All core formulas, one function each
@@ -757,9 +852,13 @@ backend/
       value_parsing.py             Per-cell parsers (float/int/IV/option-type/date), never fabricate
       csv_normalizer.py            Row-by-row validation -> NormalizedOption dicts + row errors
     providers/                     v0.1.2: MarketDataProvider interface (Phase 4, data-source half)
-      base.py                      MarketDataProvider ABC + NormalizedChainResult, the fixed contract
+      base.py                      MarketDataProvider ABC + NormalizedChainResult; optional capability
+                                    methods (get_historical_data/get_latest_quote/stream_quotes)
       csv_provider.py              CSVProvider -- thin wrapper around ingestion/csv_normalizer.py
-      registry.py                  Provider-name -> class map; where a live provider gets added later
+      alpaca_provider.py           v0.1.2: placeholder -- structure + config, no live integration
+      massive_provider.py          v0.1.2: placeholder -- structure + config, no live integration
+      schwab_provider.py           v0.1.2: placeholder -- structure + config, no live integration
+      registry.py                  Provider-name -> class map + MARKET_DATA_PROVIDER-driven default
     api/
       bear_put_spread.py           Route handlers, calls calculations in sequence
       csv_import.py                Upload -> CSVProvider.get_chain() -> return chain (no analysis math)
@@ -771,10 +870,14 @@ backend/
     test_monte_carlo.py            Phase 3: reproducibility, percentile ordering, convergence
     test_csv_import.py             v0.1.1: column mapping, value parsing, row validation
     test_csv_import_api.py         v0.1.1: upload endpoint + CSV-vs-manual-entry equivalence
-    test_providers.py              v0.1.2: interface conformance, registry, CSVProvider == ingestion output
+    test_providers.py              v0.1.2: interface conformance, placeholders, config-driven
+                                    selection, and a check that the engine imports neither
+                                    app.providers nor app.ingestion
+    test_config.py                 v0.1.2: MARKET_DATA_PROVIDER + credential env-var reading
     fixtures/sample_thinkorswim_chain.csv  v0.1.1: example chain export
   requirements.txt
   pytest.ini
+  .env.example                     v0.1.2: documents every provider env var; backend/.env is gitignored
 frontend/
   src/
     types/                         TS types mirroring backend schemas

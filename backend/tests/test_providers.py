@@ -1,6 +1,6 @@
 """Tests for the MarketDataProvider interface (app/providers/).
 
-Covers three things the rest of the test suite doesn't:
+Covers:
   1. CSVProvider actually satisfies the MarketDataProvider contract
      and returns a NormalizedChainResult with the fields every future
      provider must also fill in correctly.
@@ -9,16 +9,27 @@ Covers three things the rest of the test suite doesn't:
   3. CSVProvider's output is equivalent to calling the underlying
      ingestion module directly -- proving this is a wrapper, not a
      reimplementation (see csv_provider.py's docstring).
+  4. The placeholder providers (Alpaca/Massive/Schwab) satisfy the
+     interface, fail loudly (not silently) without credentials, and
+     raise NotImplementedError rather than returning fake data.
+  5. get_default_provider() honors MARKET_DATA_PROVIDER.
+  6. The calculation engine has no import-time dependency on CSV
+     parsing -- the actual claim behind "the scanner/analysis engine
+     must not know data originated from a CSV."
 """
 
+import pathlib
 from datetime import date
 
 import pytest
 
 from app.ingestion.csv_normalizer import CsvFormatError, parse_and_normalize_csv
+from app.providers.alpaca_provider import AlpacaProvider
 from app.providers.base import MarketDataProvider, NormalizedChainResult
 from app.providers.csv_provider import CSVProvider
-from app.providers.registry import PROVIDERS, get_provider
+from app.providers.massive_provider import MassiveProvider
+from app.providers.registry import PROVIDERS, get_default_provider, get_provider
+from app.providers.schwab_provider import SchwabProvider
 
 FIXED_TODAY = date(2026, 8, 19)
 
@@ -89,4 +100,121 @@ class TestProviderRegistry:
 
     def test_get_provider_rejects_an_unknown_name(self):
         with pytest.raises(ValueError, match="Unknown market data provider"):
-            get_provider("schwab")
+            get_provider("robinhood")
+
+
+class TestPlaceholderProviders:
+    """AlpacaProvider, MassiveProvider, SchwabProvider: structure and
+    configuration only. None has live API integration yet -- these
+    tests lock in the "fail loudly, not silently" contract so a future
+    PR that actually implements one of them has a clear point where
+    behavior is expected to change (NotImplementedError -> real data)."""
+
+    @pytest.mark.parametrize(
+        "provider_cls,expected_name",
+        [(AlpacaProvider, "alpaca"), (MassiveProvider, "massive"), (SchwabProvider, "schwab")],
+    )
+    def test_satisfies_the_interface(self, provider_cls, expected_name):
+        provider = provider_cls()
+        assert isinstance(provider, MarketDataProvider)
+        assert provider.name == expected_name
+
+    @pytest.mark.parametrize("provider_cls", [AlpacaProvider, MassiveProvider, SchwabProvider])
+    def test_all_three_are_registered(self, provider_cls):
+        assert provider_cls in PROVIDERS.values()
+
+    def test_alpaca_without_credentials_raises_a_clear_error(self, monkeypatch):
+        monkeypatch.delenv("ALPACA_API_KEY_ID", raising=False)
+        monkeypatch.delenv("ALPACA_API_SECRET_KEY", raising=False)
+        with pytest.raises(RuntimeError, match="ALPACA_API_KEY_ID"):
+            AlpacaProvider().get_chain()
+
+    def test_alpaca_with_credentials_raises_not_implemented_not_fake_data(self):
+        provider = AlpacaProvider(api_key_id="fake", api_secret_key="fake")
+        with pytest.raises(NotImplementedError, match="placeholder"):
+            provider.get_chain()
+
+    def test_massive_without_credentials_raises_a_clear_error(self, monkeypatch):
+        monkeypatch.delenv("MASSIVE_API_KEY", raising=False)
+        with pytest.raises(RuntimeError, match="MASSIVE_API_KEY"):
+            MassiveProvider().get_chain()
+
+    def test_schwab_without_credentials_raises_a_clear_error(self, monkeypatch):
+        monkeypatch.delenv("SCHWAB_CLIENT_ID", raising=False)
+        monkeypatch.delenv("SCHWAB_CLIENT_SECRET", raising=False)
+        with pytest.raises(RuntimeError, match="SCHWAB_CLIENT_ID"):
+            SchwabProvider().get_chain()
+
+    def test_credentials_can_be_passed_explicitly_without_touching_env(self, monkeypatch):
+        """Constructor args override env vars -- lets a test (or a
+        caller) supply credentials without mutating the environment."""
+        monkeypatch.delenv("ALPACA_API_KEY_ID", raising=False)
+        provider = AlpacaProvider(api_key_id="explicit", api_secret_key="explicit")
+        assert provider.api_key_id == "explicit"
+
+    @pytest.mark.parametrize("provider_cls", [AlpacaProvider, MassiveProvider, SchwabProvider])
+    def test_optional_capabilities_are_not_implemented_yet(self, provider_cls):
+        """get_historical_data/get_latest_quote/stream_quotes are
+        optional on the interface (base.py) -- confirm the placeholders
+        inherit that default rather than accidentally implementing one
+        with fake behavior."""
+        provider = provider_cls()
+        with pytest.raises(NotImplementedError):
+            provider.get_historical_data()
+        with pytest.raises(NotImplementedError):
+            provider.get_latest_quote()
+        with pytest.raises(NotImplementedError):
+            provider.stream_quotes()
+
+
+class TestConfigDrivenProviderSelection:
+    def test_defaults_to_csv_when_unset(self, monkeypatch):
+        monkeypatch.delenv("MARKET_DATA_PROVIDER", raising=False)
+        assert isinstance(get_default_provider(), CSVProvider)
+
+    def test_honors_the_environment_variable(self, monkeypatch):
+        monkeypatch.setenv("MARKET_DATA_PROVIDER", "alpaca")
+        assert isinstance(get_default_provider(), AlpacaProvider)
+
+    def test_is_case_and_whitespace_insensitive(self, monkeypatch):
+        monkeypatch.setenv("MARKET_DATA_PROVIDER", "  ALPACA  ")
+        assert isinstance(get_default_provider(), AlpacaProvider)
+
+    def test_unknown_configured_provider_raises_a_clear_error(self, monkeypatch):
+        monkeypatch.setenv("MARKET_DATA_PROVIDER", "robinhood")
+        with pytest.raises(ValueError, match="Unknown market data provider"):
+            get_default_provider()
+
+
+class TestEngineHasNoCsvDependency:
+    """Proves the claim in README section 8 / the provider-refactor
+    discussion: the quant engine (calculations/, the bear-put-spread
+    request models, and its API route) does not import anything from
+    the CSV ingestion or provider layers. If someone adds such an
+    import later, this test catches it -- checking source text is
+    crude but exact for "does this module import that one," and needs
+    no extra tooling.
+    """
+
+    ENGINE_FILES = [
+        "app/calculations/stats.py",
+        "app/calculations/bear_put_spread.py",
+        "app/calculations/payoff_scenarios.py",
+        "app/calculations/probability_distribution.py",
+        "app/calculations/monte_carlo.py",
+        "app/models/bear_put_spread.py",
+        "app/models/response.py",
+        "app/api/bear_put_spread.py",
+    ]
+    FORBIDDEN_SUBSTRINGS = ["ingestion", "providers", "csv", "Csv", "CSV"]
+
+    def test_no_engine_file_references_csv_or_providers(self):
+        backend_root = pathlib.Path(__file__).resolve().parent.parent
+        for relative_path in self.ENGINE_FILES:
+            source = (backend_root / relative_path).read_text()
+            for forbidden in self.FORBIDDEN_SUBSTRINGS:
+                assert forbidden not in source, (
+                    f"{relative_path} references {forbidden!r} -- the calculation "
+                    "engine must depend only on plain request models, never on "
+                    "how the data reached them."
+                )
