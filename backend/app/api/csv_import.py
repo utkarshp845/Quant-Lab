@@ -1,19 +1,29 @@
 """API route for CSV options-chain import.
 
 This route does exactly one thing: turn an uploaded CSV into a list of
-NormalizedOption contracts (app.ingestion.csv_normalizer does the
-actual work). It does NOT run any bear-put-spread math -- once the
-user picks a long and short put from the imported chain, the frontend
-builds a normal BearPutSpreadRequest from those two contracts and
-posts it to the existing /api/bear-put-spread endpoint, so the
+NormalizedOption contracts, via CSVProvider (app.providers.csv_provider)
+-- the first implementation of the MarketDataProvider interface
+(app.providers.base). It does NOT run any bear-put-spread math -- once
+the user picks a long and short put from the imported chain, the
+frontend builds a normal BearPutSpreadRequest from those two contracts
+and posts it to the existing /api/bear-put-spread endpoint, so the
 analysis is guaranteed to be identical to typing the same numbers in
 by hand. See CalculatorPage.tsx / CsvImportWorkflow.tsx.
+
+Why this route still returns CsvImportResponse rather than the
+provider's NormalizedChainResult directly: this endpoint's contract is
+"upload a CSV, get back exactly what was in it" -- detected_columns and
+column_mapping are meaningful to a human who just uploaded a file and
+want to see the API's response stay stable. A future live-provider
+route (e.g. GET /api/market-data/{symbol}) would return
+NormalizedChainResult as-is, since there's no upload to describe.
 """
 
 from fastapi import APIRouter, HTTPException, UploadFile
 
-from app.ingestion.csv_normalizer import CsvFormatError, parse_and_normalize_csv
 from app.models.option_chain import CsvImportResponse
+from app.providers.csv_provider import CsvFormatError
+from app.providers.registry import get_provider
 
 router = APIRouter()
 
@@ -36,16 +46,26 @@ async def import_csv(file: UploadFile) -> CsvImportResponse:
     except UnicodeDecodeError as exc:
         raise HTTPException(status_code=422, detail="Could not read the file as UTF-8 text.") from exc
 
+    provider = get_provider("csv")
     try:
-        result = parse_and_normalize_csv(text)
+        result = provider.get_chain(csv_text=text)
     except CsvFormatError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
-    if result["imported_rows"] == 0:
+    if result.imported_rows == 0:
         raise HTTPException(
             status_code=422,
             detail="No valid option rows were found in this file. "
-            f"{len(result['row_errors'])} row(s) had errors -- check that bid/ask/delta/strike/IV are all present and valid.",
+            f"{len(result.row_errors)} row(s) had errors -- check that bid/ask/delta/strike/IV are all present and valid.",
         )
 
-    return CsvImportResponse(**result)
+    return CsvImportResponse(
+        detected_columns=result.metadata["detected_columns"],
+        column_mapping=result.metadata["column_mapping"],
+        contracts=result.contracts,
+        symbols=result.symbols,
+        expirations_by_symbol=result.expirations_by_symbol,
+        row_errors=result.row_errors,
+        total_rows=result.total_rows,
+        imported_rows=result.imported_rows,
+    )

@@ -412,11 +412,27 @@ chance of profit."*
 
 ## 10. What is intentionally NOT implemented yet
 
-Live market data, brokerage APIs / scraping, automatic trade execution,
-automated recommendations, machine learning, historical backtesting, a
-database, authentication, user accounts, portfolio management, a scanner.
-All of that is out of scope, which is about correctness and transparency of
-a single, manually-driven calculation.
+Live market data, brokerage APIs for *reading* data, machine learning,
+historical backtesting, a database, authentication, user accounts,
+portfolio management, a market-wide scanner. All of that is out of scope
+for now — the roadmap in section 11 below has a phase for most of it —
+which is about correctness and transparency of a single, manually-driven
+calculation coming first.
+
+**One item is not "not yet" — it is permanently out of scope, at every
+phase, including the paper-trading and signal-generation phases below:**
+automated recommendation logic — ranking trades, flagging a "best" row, or
+any output stronger than "these structures match the criteria you
+defined."
+
+**Live execution of a real trade with real capital is not permanently
+out of scope, but it is not part of the near-term roadmap either, and it
+does not follow automatically from finishing Phase 9.** It is explicitly
+gated behind a real paper-trading track record showing consistent
+returns, and even then requires its own deliberate scope decision and
+safety architecture. See
+[Phase 10 — Live execution](#phase-10--live-execution-gated-not-automatic)
+in the roadmap.
 
 Note: Phase 2's "probability engine" and Phase 3's "Monte Carlo
 simulation" are two independent, cross-checked implementations of the same
@@ -467,28 +483,38 @@ as a **model output**, not a fact — e.g. "Based on the assumptions of this
 model, 47.2% of simulated outcomes were profitable," never "there's a 47%
 chance of profit."
 
-**Phase 4 — Real options data.** Replace manual entry with a real market
-data source, but architect the data layer so the *source* is swappable and
-never load-bearing for the rest of the app: a `MarketDataProvider`
-interface with implementations for CSV/manual paste (what this app already
-effectively does), and one or more real providers behind the same
-interface, all normalizing into the same option-chain shape the calculator
-already consumes. The application must not be architected around scraping
-any specific broker's UI (e.g. Thinkorswim) — that's a fragile, single
-implementation of the interface, not the interface itself.
+**Phase 4 — Real options data.** *(the abstraction layer landed in
+v0.1.2 — see below; a live data source has not, and isn't planned as an
+immediate next step)* Replace manual entry with a real market data
+source, architected so the *source* is swappable and never load-bearing
+for the rest of the app. v0.1.2 built exactly that seam:
+`MarketDataProvider` (`backend/app/providers/base.py`) is an interface
+every source implements, returning one common `NormalizedChainResult`
+regardless of how the data arrived. `CSVProvider`
+(`backend/app/providers/csv_provider.py`) is the first implementation —
+a thin wrapper around the unchanged v0.1.1 CSV ingestion pipeline, so
+nothing about CSV import's behavior changed, only what now stands in
+front of it. `registry.py` maps provider names to classes, so adding a
+live provider later (Schwab, Alpaca, etc.) means one new file plus one
+new registry entry — never touching this interface, the API routes, or
+anything downstream of `NormalizedChainResult`. What's still missing,
+and is the actual point of this phase, is an implementation of that
+interface backed by a live data source. The application must not be
+architected around scraping any specific broker's UI (e.g. Thinkorswim)
+— that's a fragile, single implementation of the interface, not the
+interface itself.
 
 ```
-             ┌─────────────┐
-             │ Market Data │
-             └──────┬──────┘
-                    │
-        ┌───────────┼───────────┐
-        ▼           ▼           ▼
-     Provider A  Provider B  CSV / manual
-        │           │           │
-        └───────────┼───────────┘
-                    ▼
-             Normalized Chain
+                  ┌── CSVProvider        (done, v0.1.2)
+MarketDataProvider┤── SchwabProvider     (future)
+                  ├── AlpacaProvider     (future)
+                  └── ...
+                          │
+                          ▼
+                 NormalizedChainResult
+                          │
+                          ▼
+          Quant engine (calculator, scanner, ...)
 ```
 
 **Phase 5 — The scanner.** *(a first, tiny version done in v0.1.1 — see
@@ -500,7 +526,7 @@ once there's a real data source (Phase 4), let the computer search across
 hypothesis you define — e.g. DTE 20-45, long delta 0.55-0.70, short delta
 0.20-0.35, IV 30-60%, bid/ask spread < 10%, max loss < $500, reward/risk >
 0.75, probability of profit > 40%, expected value > $0 — and return a
-ranked table of candidates (symbol, strikes, debit, max profit, POP, EV)
+sortable table of candidates (symbol, strikes, debit, max profit, POP, EV)
 for you to *investigate*, each one run back through the same transparent
 calculator from Phase 1. The scanner's job is strictly "these structures
 satisfy the criteria you defined" — never "buy this." No autonomous
@@ -528,6 +554,51 @@ overconfident — a genuinely useful, humbling discovery that this whole
 project has been building toward. At this point the biggest risk to a
 trader using this tool may not be market direction at all, but
 overconfidence in the model's own probability estimates.
+
+**Phase 8 — Signal generation.** Once structures matching a hypothesis
+(Phase 5) can be checked against a calibrated model (Phase 7), define
+explicit, transparent criteria for when a matching structure becomes a
+labeled, journaled "signal" — still governed by the same rule the scanner
+already holds to: this stays "these structures satisfy the criteria you
+defined," never "buy this." No ranking signals against each other, no
+"best" signal, no confidence-weighted ordering. A signal is a documented
+hypothesis with the same probability/EV numbers already computed
+elsewhere in the app, timestamped and ready to be tracked through Phase 9
+— not a stronger claim than anything Phase 5 already makes.
+
+**Phase 9 — Paper trading.** A simulated account: signals from Phase 8
+get "entered" with no real capital, tracked against real subsequent
+market data (via the Phase 4 provider layer) the same way a Phase 6
+journal entry is, and closed out at expiration or exit. This is the first
+phase that models *holding* a position through time — price and time
+passing — rather than only its entry/exit snapshot. It is a simulator:
+no brokerage connection, no order routing, no real money at risk, at this
+phase or ever (see below).
+
+**Phase 10 — Live execution (gated, not automatic).** Not part of the
+near-term roadmap, and not something Phase 9 unlocks by itself. This
+phase only becomes a live discussion once a strategy has a real
+paper-trading track record (Phase 9) showing *statistically consistent*
+returns — not a handful of lucky trades — and even then, starting it is
+its own deliberate decision, made separately, not something that ships
+just because the code could technically support it by that point.
+
+If this phase is ever reached, it needs its own safety architecture, not
+just a brokerage API key: explicit per-trade confirmation from you before
+any real order is placed (no standing auto-trade rules, no execution
+triggered automatically off a signal alone), small/capped position sizing
+to start, and a kill switch. The no-ranking/no-recommendation rule from
+Phase 5 and Phase 8 still applies here too — the tool's job stays "here's
+what this signal implies, confirm if you want to act on it," never "the
+system decided to trade this for you."
+
+One more boundary worth stating plainly: this assistant will not place a
+real trade or move real capital on your behalf, in this project or any
+other, regardless of what the codebase supports. If Phase 10 is ever
+reached, placing the actual order is something you do yourself,
+deliberately, one trade at a time — the same way every earlier phase's
+"no autonomous decision" rule applies to the *analysis*, this applies to
+the *action*.
 
 ## 12. Importing options data from CSV (v0.1.1)
 
@@ -685,9 +756,13 @@ backend/
       column_mapping.py            Broker-style column-name aliases -> normalized fields
       value_parsing.py             Per-cell parsers (float/int/IV/option-type/date), never fabricate
       csv_normalizer.py            Row-by-row validation -> NormalizedOption dicts + row errors
+    providers/                     v0.1.2: MarketDataProvider interface (Phase 4, data-source half)
+      base.py                      MarketDataProvider ABC + NormalizedChainResult, the fixed contract
+      csv_provider.py              CSVProvider -- thin wrapper around ingestion/csv_normalizer.py
+      registry.py                  Provider-name -> class map; where a live provider gets added later
     api/
       bear_put_spread.py           Route handlers, calls calculations in sequence
-      csv_import.py                v0.1.1: upload -> normalize -> return chain (no analysis math)
+      csv_import.py                Upload -> CSVProvider.get_chain() -> return chain (no analysis math)
   tests/
     test_calculations.py           Pure-function unit tests + graduation example
     test_validation.py             Input validation tests
@@ -696,6 +771,7 @@ backend/
     test_monte_carlo.py            Phase 3: reproducibility, percentile ordering, convergence
     test_csv_import.py             v0.1.1: column mapping, value parsing, row validation
     test_csv_import_api.py         v0.1.1: upload endpoint + CSV-vs-manual-entry equivalence
+    test_providers.py              v0.1.2: interface conformance, registry, CSVProvider == ingestion output
     fixtures/sample_thinkorswim_chain.csv  v0.1.1: example chain export
   requirements.txt
   pytest.ini
