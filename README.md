@@ -25,7 +25,9 @@ spreadsheet — but with every step shown, not hidden behind a single
 - Lets you manually enter an underlying (symbol, price, DTE) and two put
   legs (a long put you buy, a short put you sell) -- or **(v0.1.1) import
   a CSV export of an options chain** and pick the two legs from a table
-  instead of typing them in. See
+  instead of typing them in, with an instant Spread Builder preview as you
+  click, and a **tiny scanner** that computes every valid long/short
+  combination in the file and lets you filter by DTE/delta/max loss. See
   [12. Importing options data from CSV](#12-importing-options-data-from-csv-v011)
   below.
 - Computes, and shows the formula for: debit, max loss, max profit,
@@ -489,8 +491,12 @@ implementation of the interface, not the interface itself.
              Normalized Chain
 ```
 
-**Phase 5 — The scanner.** Once there's a real data source (Phase 4), let
-the computer search across many symbols for structures matching a
+**Phase 5 — The scanner.** *(a first, tiny version done in v0.1.1 — see
+["The first tiny scanner"](#the-first-tiny-scanner) above)* The v0.1.1
+version searches every long/short combination in one already-uploaded CSV
+file, filtered by DTE/delta/max loss. The full Phase 5 vision goes further:
+once there's a real data source (Phase 4), let the computer search across
+*many symbols*, not just one uploaded file, for structures matching a
 hypothesis you define — e.g. DTE 20-45, long delta 0.55-0.70, short delta
 0.20-0.35, IV 30-60%, bid/ask spread < 10%, max loss < $500, reward/risk >
 0.75, probability of profit > 40%, expected value > $0 — and return a
@@ -498,7 +504,9 @@ ranked table of candidates (symbol, strikes, debit, max profit, POP, EV)
 for you to *investigate*, each one run back through the same transparent
 calculator from Phase 1. The scanner's job is strictly "these structures
 satisfy the criteria you defined" — never "buy this." No autonomous
-recommendation logic, ever, in any phase.
+recommendation logic, ever, in any phase — the v0.1.1 version already
+holds to this: no ranking, no highlighted "best" row, just a filtered,
+sortable list.
 
 **Phase 6 — Trade journal.** Every hypothetical or real trade gets
 recorded at entry (underlying, strategy, strikes, debit, IV, expected move,
@@ -526,10 +534,12 @@ overconfidence in the model's own probability estimates.
 Manual entry works fine for one spread at a time, but typing in a whole
 option chain by hand doesn't. v0.1.1 adds a second way to fill in the same
 inputs: upload a CSV export of an options chain, pick a long and short
-put from a table, and click "Analyze Spread." **This is a data-entry
-convenience, not a new data source or a scanner** — nothing is fetched
-automatically, no network call happens except reading the file you chose,
-and the file never leaves your machine except to your own local backend.
+put from a table, and click "Analyze Spread." **This is not a new live
+data source** — nothing is fetched automatically, no network call happens
+except reading the file you chose, and the file never leaves your machine
+except to your own local backend. It does now include a small scanner
+(see "The first tiny scanner" below) — but one that only searches the
+single file you already uploaded, not the market.
 
 **Workflow:** Upload CSV → select expiration → select long put → select
 short put → Analyze Spread. As soon as both legs are picked, a **Spread
@@ -609,6 +619,49 @@ no execution, no database (nothing from an uploaded file is persisted —
 re-uploading is required each session), no Monte Carlo/backtesting changes.
 This is strictly CSV → normalized options data → the existing calculator.
 
+### The Spread Builder
+
+Within "Browse Chain," as soon as both legs are picked a **Spread Builder**
+preview card appears instantly above the chain (Debit, Max Loss, Max
+Profit, Breakeven, Delta) — computed client-side, live, no network call,
+using the same TypeScript formula mirror the rest of the app already has
+(`frontend/src/calculations/bearPutSpread.ts`). The point is the
+"constructing an instrument from the chain in front of you" feel: click BUY
+on one strike, SELL on another, and watch the spread's numbers appear —
+rather than filling out a form and pressing a button to find out what you
+built. Clicking Analyze Spread still exists for the full transparent,
+formula-by-formula breakdown (Trade Structure through Monte Carlo).
+
+### The first tiny scanner
+
+A second mode, "Scan Combinations," examines **every possible long-put +
+short-put pairing within the file you already uploaded** — not a
+market-wide scan across symbols; that is still future scope (see Phase 5 in
+the roadmap below, which needs a real data source from Phase 4 first). This
+is the first place in the app doing something you couldn't reasonably do by
+hand: for a chain with 10 put strikes across 2 expirations, that's dozens
+of valid long/short combinations, each with its own debit, max loss, max
+profit, breakeven, and delta, computed all at once
+(`frontend/src/utils/spreadCombinations.ts`).
+
+Pairing rules mirror the existing single-pair validation exactly: both legs
+must be puts, both must share an expiration (spreading across expirations
+isn't a real bear put spread), and the long strike must exceed the short
+strike. Results can be filtered by DTE range, long delta range, short delta
+range, and a maximum-loss ceiling — matching the four criteria requested —
+and sorted by clicking any column header. Clicking **Analyze** on any row
+hands off to the exact same `onApply` → manual-entry-form → `/api/bear-put-spread`
+path every other entry method uses, so a scanned row's numbers are exactly
+as verified as a hand-typed one.
+
+**What this deliberately does not do**: rank, score, or recommend rows.
+The results table has no "best" column and no highlighting for any row over
+another — filtering only narrows what's shown; it never decides for you.
+This stays true to the same principle as every other probability/EV number
+in this app: the software finds structures matching a hypothesis you
+define, and you investigate them, exactly as described in the Phase 5
+roadmap entry below.
+
 ---
 
 ## Project structure
@@ -651,6 +704,9 @@ frontend/
     types/                         TS types mirroring backend schemas
       csvImport.ts                 v0.1.1: NormalizedOption / CsvImportResponse types
     calculations/                  TS mirror of the backend formulas
+    utils/
+      optionToFormState.ts         v0.1.1: NormalizedOption pair -> BearPutSpreadFormState (shared)
+      spreadCombinations.ts        v0.1.1: tiny scanner -- all valid combos + filtering
     api/client.ts                  Fetch wrapper + error formatting + importCsv()
     components/                    One component per UI section
       DistributionChart.tsx        Phase 2: probability histogram + payoff line, combined
@@ -661,6 +717,7 @@ frontend/
       CsvImportWorkflow.tsx        v0.1.1: upload -> select -> Analyze Spread
       OptionChainTable.tsx         v0.1.1: chain table with call/put filter + long/short selection
       SpreadBuilderPreview.tsx     v0.1.1: instant client-side Debit/Max Loss/Profit/Breakeven/Delta
+      SpreadScanner.tsx            v0.1.1: tiny scanner UI -- filters, sortable results, Analyze
     pages/CalculatorPage.tsx       Composes the page, owns form state
     App.tsx, main.tsx, index.css
 ```
