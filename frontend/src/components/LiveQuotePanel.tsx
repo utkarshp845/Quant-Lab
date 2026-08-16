@@ -97,9 +97,9 @@ export function LiveQuotePanel({ symbol, csvUnderlyingPrice }: LiveQuotePanelPro
             <dt>Price</dt>
             <dd>{quote.price != null ? fmtUsd(quote.price) : "—"}</dd>
             <dt>Bid</dt>
-            <dd>{fmtUsd(quote.bid)}</dd>
+            <dd>{quote.bid != null ? fmtUsd(quote.bid) : "not available"}</dd>
             <dt>Ask</dt>
-            <dd>{fmtUsd(quote.ask)}</dd>
+            <dd>{quote.ask != null ? fmtUsd(quote.ask) : "not available"}</dd>
             <dt>Volume</dt>
             <dd>{quote.volume != null ? fmtVolume(quote.volume) : "not available"}</dd>
             <dt>Updated</dt>

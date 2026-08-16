@@ -6,8 +6,13 @@
 export interface LiveQuote {
   symbol: string;
   price: number | null;
-  bid: number;
-  ask: number;
+  // Optional as of v0.1.15: a REST-derived quote always has both, but
+  // the streaming route's Massive polling fallback (used when the
+  // account isn't entitled to Massive's real-time WebSocket) is built
+  // from an OHLCV bar, which has no bid/ask at all -- null there,
+  // never a fabricated number standing in for one.
+  bid: number | null;
+  ask: number | null;
   volume: number | null; // best-effort; null if the provider/plan doesn't return it
   timestamp: string; // ISO datetime string
   provider: string;

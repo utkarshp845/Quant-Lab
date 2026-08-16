@@ -92,19 +92,30 @@ class LiveQuote(BaseModel):
         than nested.
       - `timestamp` is flattened to a plain datetime -- the frontend
         doesn't need MarketTimestamp's source field twice.
+      - `bid`/`ask` are optional as of v0.1.15: every REST-derived
+        LiveQuote (built from a real provider Quote, which always has
+        both) still has them, but the streaming route's Massive
+        polling fallback (app/streaming/massive_stream.py's
+        MassivePollingQuoteStream, used when the account isn't
+        entitled to Massive's real-time WebSocket) is built from an
+        OHLCV bar, which has no bid/ask at all -- None there, never a
+        fabricated number standing in for one, matching this app's
+        "never invent a plausible-looking value" rule elsewhere (see
+        e.g. app/ingestion/value_parsing.py).
 
     Deliberately NOT a change to Quote itself: Quote is what all three
     providers' get_latest_quote() are tested against (see
     tests/test_alpaca_provider.py etc.) -- adding volume/provider
     there would mean every provider either fabricates them or leaves
     them None with no HTTP-layer meaning attached. LiveQuote is purely
-    an HTTP response shape assembled in app/api/market_data.py.
+    an HTTP response shape assembled in app/api/market_data.py (and,
+    as of v0.1.12/15, app/api/market_data_stream.py).
     """
 
     symbol: str
     price: float | None
-    bid: float
-    ask: float
+    bid: float | None = None
+    ask: float | None = None
     volume: int | None = None
     timestamp: datetime
     provider: str

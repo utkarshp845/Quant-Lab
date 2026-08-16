@@ -970,7 +970,7 @@ NVDA, an implausibly wide TSLA spread) — worth remembering before
 trusting `get_latest_quote()` for anything time-sensitive on a free
 plan, independent of which provider serves it.
 
-## 14. Real-time streaming market data (Alpaca v0.1.12, Massive v0.1.13)
+## 14. Real-time streaming market data (Alpaca v0.1.12, Massive v0.1.13/15)
 
 **Why this is a different mechanism from section 13's quote lookup.**
 `GET /market-data/{symbol}/quote` is request/response: the frontend
@@ -1018,35 +1018,52 @@ refactor: `AlpacaQuoteStream` originally owned this loop directly
 re-introducing the connection-limit bug described below in a second
 place).
 
-**Data flow, end to end:**
+**Data flow, end to end.** Alpaca's path is a single WebSocket. Massive's
+path (v0.1.15) tries its own WebSocket first, and only falls back to
+REST polling if that fails fatally -- both still land in the same
+`LiveQuote` model and the same `StreamHub`, since `MassiveStream`
+satisfies the same `QuoteStream` structural contract
+(`app/streaming/base.py`) `AlpacaQuoteStream` satisfies by inheriting
+`ReconnectingQuoteStream`:
 
 ```
-Alpaca (wss://stream.data.alpaca.markets/v2/iex)      Massive (wss://socket.massive.com/stocks)
-        │  auth: {"action":"auth","key":..,"secret":..}       │  auth: {"action":"auth","params":<key>}
-        │  ALPACA_API_KEY_ID/SECRET, backend-only              │  MASSIVE_API_KEY, backend-only
-        ▼                                                      ▼
-AlpacaQuoteStream (app/streaming/alpaca_stream.py)     MassiveQuoteStream (app/streaming/massive_stream.py)
-        │  normalizes "q"/"t" messages                         │  normalizes "Q"/"T" messages
-        └──────────────────────┬──────────────────────────────┘
-                                ▼  both extend ReconnectingQuoteStream (app/streaming/base.py)
-                           into the shared LiveQuote model
-                                ▼
-StreamHub                            (app/streaming/hub.py)
-        │  one upstream connection per (provider, symbol) pair, fanned
-        │  out to every connected browser tab (both Alpaca and Massive
-        │  allow only one live connection per API key -- see hub.py's
-        │  module docstring)
-        ▼
-WebSocket route                      (app/api/market_data_stream.py)
-        │  relays {"type": "status", ...} / {"type": "quote", ...} frames
-        ▼
-useQuoteStream(symbol, provider)     (frontend/src/hooks/useQuoteStream.ts)
-        │  owns the browser<->backend socket + its own reconnect/backoff;
-        │  reconnects to a new provider whenever `provider` changes
-        ▼
-LiveStreamPanel                      (frontend/src/components/LiveStreamPanel.tsx)
-                                      provider dropdown (Alpaca/Massive) + status +
-                                      auto-updating quote + "last update" time
+Alpaca                                    Massive
+wss://stream.data.alpaca.markets/v2/iex   wss://socket.massive.com/stocks
+        │                                          │
+        ▼                                          ▼
+AlpacaQuoteStream                         MassiveQuoteStream
+(app/streaming/alpaca_stream.py)          (app/streaming/massive_stream.py)
+        │                                          │
+        │                                    fatal? (e.g. not entitled
+        │                                    on this plan -- confirmed
+        │                                    live, see the callout below)
+        │                                          │
+        │                                          ▼
+        │                                  MassivePollingQuoteStream
+        │                                  polls the free-tier minute-bar
+        │                                  REST endpoint every 30s instead;
+        │                                  price/volume from the bar,
+        │                                  bid/ask always None (a bar has
+        │                                  neither)
+        │                                          │
+        │                          both wrapped by MassiveStream, which
+        │                          decides which one is currently live
+        │                                          │
+        └────────────────────┬─────────────────────┘
+                              ▼  every path ends here, as a LiveQuote
+                         StreamHub  (app/streaming/hub.py)
+                              │  one upstream connection per (provider, symbol)
+                              │  pair, fanned out to every connected browser tab
+                              ▼
+                    WebSocket route  (app/api/market_data_stream.py)
+                              │  relays {"type": "status", ...} / {"type": "quote", ...}
+                              ▼
+        useQuoteStream(symbol, provider)  (frontend/src/hooks/useQuoteStream.ts)
+                              │  owns the browser<->backend socket + its own
+                              │  reconnect/backoff; reconnects on provider change
+                              ▼
+                     LiveStreamPanel  (frontend/src/components/LiveStreamPanel.tsx)
+                          provider dropdown + status + auto-updating quote
 ```
 
 **Two independent reconnection layers, on purpose, because there are
@@ -1133,17 +1150,56 @@ the connection and replies to the auth message with `{"ev":"status",
 access. Visit https://massive.com/pricing to upgrade."}` --
 `MassiveQuoteStream._authenticate()` maps Massive's `"auth_failed"`
 status to `StreamAuthRejected` (the same fatal, non-retried exception
-Alpaca's bad-credentials case raises), so switching the `LiveStreamPanel`
-dropdown to Massive on a free-plan account shows a clean, immediate
-`"Error"` with that exact message -- once, not an endless retry loop
-against a plan limitation retrying can never fix. Upgrading the
-Massive plan needs no code change; the implementation is already
-correct and ready for a paid key. Protocol details (connection URL,
-auth/subscribe message shapes, event field names) were confirmed
+Alpaca's bad-credentials case raises). Protocol details (connection
+URL, auth/subscribe message shapes, event field names) were confirmed
 against `massive.com/docs/websocket/*` and the official
 `massive-com/client-python` source, not guessed -- see
 `massive_stream.py`'s module docstring for exactly which source
-confirmed which detail.
+confirmed which detail. Even the *delayed* WebSocket
+(`wss://delayed.massive.com/stocks`) was tested live and got the same
+rejection -- this plan has no WebSocket path at all, delayed or
+real-time.
+
+**v0.1.15: rather than leave that as a dead end, `MassiveStream`
+(`massive_stream.py`) falls back to polling Massive's free-tier
+minute-bar REST endpoint instead of giving up.** `MassivePollingQuoteStream`
+calls the same `get_historical_data()` `MassiveProvider`'s already-
+confirmed-free bars use, on a 30-second timer, and normalizes the
+latest bar into a `LiveQuote` -- so a free-plan account now sees
+`LiveStreamPanel` show real, updating TSLA price/volume for Massive
+instead of a permanent `"Error"`. `MassiveStream` tries the real
+WebSocket first every time (including its normal retry/backoff on a
+*transient* failure) and only switches to polling once the WebSocket
+attempt ends fatally -- so upgrading the Massive plan later starts the
+real WebSocket working again with no code change, no manual reset,
+just the next fresh connection attempt.
+
+Two things this polling path is honest about, not silently glossing
+over:
+- **No bid/ask.** A bar has open/high/low/close/volume, never a bid or
+  ask -- `LiveQuote.bid`/`.ask` are `None` here (the model became
+  optional for exactly this case, v0.1.15), not a bar's close standing
+  in for both, which would misrepresent the bid-ask spread as zero.
+  `LiveStreamPanel` renders both as "not available" and the caveat line
+  under the quote card explains why.
+- **A real correction, not an assumption:** the first version of this
+  feature queried `start=end=today()` and claimed the data was
+  genuinely fresh with no artificial delay -- based on a test that only
+  ever queried a date whose trading session had *already fully ended*,
+  which proves nothing about a live session. Testing the actual
+  "today" query live surfaced two things: (1) `start=end=today()` alone
+  returns a flat `403` on this plan *regardless of whether data
+  exists* -- a *different* restriction from the real-time-quote one
+  above, confirmed by querying an empty Saturday (`200`, zero results)
+  against the literal current day (`403`, "Your plan doesn't include
+  this data timeframe") with everything else held constant; and (2) a
+  *range* that reaches into the current timeframe succeeds but comes
+  back with a top-level `"status": "DELAYED"` instead of `"OK"`. So
+  `_latest_bar()` always queries a trailing multi-day window, never a
+  single "just today" day, and this app does not claim to know the
+  actual delay magnitude during a live session (untested outside
+  market hours) -- only that Massive's own response says it's delayed,
+  and this code repeats that rather than a stronger claim.
 
 **Volume is honestly a different number here than section 13's.**
 `LiveQuote.volume` from the REST route is a best-effort *session*
@@ -1175,12 +1231,15 @@ card.
    but "Waiting for the first tick…" is the correct, honest state --
    the feed has nothing to send when no trades are happening, not a
    broken connection.
-4. Switch the dropdown to Massive: on a free-tier Massive account this
-   should show a clean "Error" with a message naming a plan upgrade
-   (see the callout above) -- that is the correct, expected behavior
-   for this account, not a bug to chase. On a paid Massive plan with
-   WebSocket entitlement, it should behave exactly like Alpaca did in
-   step 3.
+4. Switch the dropdown to Massive: on a free-tier Massive account it
+   should briefly show "Connecting…" with a detail naming why the
+   WebSocket is unavailable, then settle on "Connected" with a detail
+   explaining it's polling free-tier minute bars every 30s -- and
+   within one poll cycle, a real TSLA price/volume should appear with
+   Bid/Ask both "not available" (see the callout above for why that's
+   correct, not missing data). On a paid Massive plan with WebSocket
+   entitlement, it should behave exactly like Alpaca did in step 3
+   instead -- MassiveStream always tries the real WebSocket first.
 5. To see reconnection: stop the backend (`scripts/dev.sh stop` or
    `Ctrl-C`) while the page is open -- the panel turns "Disconnected"
    with a growing "retrying in Ns" countdown; start the backend again
@@ -1205,7 +1264,9 @@ backend/
       option_chain.py              v0.1.1: NormalizedOption + CSV import response models
       market_data.py               v0.1.2: MarketBar/Quote/MarketTimestamp -- unused by CSV path today.
                                     v0.1.11 added LiveQuote, the flat HTTP response shape (symbol/price/
-                                    bid/ask/volume/timestamp/provider) GET /market-data/.../quote returns
+                                    bid/ask/volume/timestamp/provider) GET /market-data/.../quote returns.
+                                    v0.1.15: LiveQuote.bid/.ask became optional (None for the Massive
+                                    polling fallback's bar-derived quotes, which have no bid/ask at all)
     calculations/
       stats.py                     normal_cdf
       bear_put_spread.py           All core formulas, one function each
@@ -1232,15 +1293,22 @@ backend/
       base.py                      v0.1.13: ReconnectingQuoteStream -- the reconnect/backoff loop and the
                                     three provider-agnostic exceptions (StreamCredentialsMissing/
                                     StreamAuthRejected/StreamTransientError) both providers below share;
-                                    extracted from alpaca_stream.py once massive_stream.py needed the same shape
+                                    extracted from alpaca_stream.py once massive_stream.py needed the same
+                                    shape. v0.1.15 added the QuoteStream Protocol (run/stop/provider_name)
+                                    hub.py's STREAM_FACTORIES actually type against, satisfied by
+                                    composition (MassiveStream below) as well as by inheritance
       alpaca_stream.py             One upstream WS connection to Alpaca's streaming API for one symbol --
                                     auth, subscribe, "q"/"t" message normalization into LiveQuote;
                                     distinguishes fatal (bad credentials, code 402) from retryable
                                     (connection-limit/timeout, codes 404/406/407) auth failures
-      massive_stream.py            v0.1.13: same shape as alpaca_stream.py, Massive's own protocol
-                                    (wss://socket.massive.com/stocks, "Q"/"T" message normalization,
-                                    Unix-millisecond timestamps); "auth_failed" -> fatal, confirmed live
-                                    to mean "your plan doesn't include websocket access" on this account
+      massive_stream.py            v0.1.13: MassiveQuoteStream -- same shape as alpaca_stream.py, Massive's
+                                    own protocol (wss://socket.massive.com/stocks, "Q"/"T" message
+                                    normalization, Unix-millisecond timestamps); "auth_failed" -> fatal,
+                                    confirmed live to mean "your plan doesn't include websocket access" on
+                                    this account. v0.1.15 added MassivePollingQuoteStream (polls the free-
+                                    tier minute-bar REST endpoint on a 30s timer -- no bid/ask, since a bar
+                                    has none) and MassiveStream (tries the WebSocket first, falls back to
+                                    polling only on a fatal WS error; what hub.py actually registers)
       hub.py                       StreamHub -- one upstream connection per (provider, symbol) pair shared
                                     by every connected browser tab (each provider allows only one live
                                     connection per API key) + state replay for a client that joins after
@@ -1301,6 +1369,11 @@ backend/
                                     message normalization, millisecond-timestamp parsing, and the
                                     "auth_failed" classification that a real-account test run confirmed
                                     means "plan doesn't include websocket access" on this account
+    test_massive_polling_stream.py v0.1.15: MassivePollingQuoteStream (bar-derived quotes with null bid/
+                                    ask, dedup of an unchanged bar, fatal-vs-transient REST failure
+                                    classification -- with a fake MassiveProvider, no real network) and
+                                    MassiveStream (falls back to polling only on a fatal WS error, a
+                                    working WS never touches polling, stop() reaches both inner streams)
     test_stream_hub.py             v0.1.12 (renamed from test_alpaca_stream_hub.py in v0.1.13 once the hub
                                     stopped being Alpaca-specific): fan-out/lifecycle tests with a fake
                                     stream factory -- one upstream connection per (provider, symbol) pair
@@ -1322,7 +1395,8 @@ frontend/
                                     response shape, not the provider-facing Quote model). v0.1.12 added
                                     StreamMessage (status/quote WebSocket frame union). v0.1.13 added
                                     StreamProvider ("alpaca" | "massive" -- narrower than LiveQuoteProvider,
-                                    since Schwab doesn't stream)
+                                    since Schwab doesn't stream). v0.1.15: bid/ask became number | null
+                                    (the Massive polling fallback's bar-derived quotes have neither)
     calculations/                  TS mirror of the backend formulas
     utils/
       optionToFormState.ts         v0.1.1: NormalizedOption pair -> BearPutSpreadFormState (shared)
@@ -1350,12 +1424,16 @@ frontend/
                                     Alpaca/Massive/Schwab data; never feeds the calculator, purely a
                                     side-by-side reference. Used two ways as of v0.1.11: embedded next to
                                     a CSV chain's underlying price (staleness check), and standalone with
-                                    symbol="TSLA" on CalculatorPage (minimal, always-visible pipeline proof)
+                                    symbol="TSLA" on CalculatorPage (minimal, always-visible pipeline proof).
+                                    v0.1.15: Bid/Ask render "not available" when null, same as Volume already did
       LiveStreamPanel.tsx          v0.1.12: no fetch button -- renders useQuoteStream's status (Connecting/
                                     Connected/Disconnected/Error) + auto-updating TSLA quote + "last update"
                                     time. Separate from LiveQuotePanel on purpose (push vs. click-to-fetch);
                                     both sit side by side on CalculatorPage. v0.1.13 added a provider
-                                    dropdown (Alpaca/Massive) that reconnects the stream on change
+                                    dropdown (Alpaca/Massive) that reconnects the stream on change. v0.1.15:
+                                    Bid/Ask render "not available" when null (the Massive polling fallback),
+                                    and the caveat line under the quote card switches wording based on
+                                    whether bid/ask are present, rather than assuming which provider is active
     pages/CalculatorPage.tsx       Composes the page, owns form state; v0.1.11 added the standalone
                                     TSLA LiveQuotePanel instance, always visible above the calculator.
                                     v0.1.12 added LiveStreamPanel directly below it

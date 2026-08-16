@@ -27,18 +27,22 @@ from typing import Callable
 
 from app.models.market_data import LiveQuote
 from app.streaming.alpaca_stream import AlpacaQuoteStream
-from app.streaming.base import ReconnectingQuoteStream
-from app.streaming.massive_stream import MassiveQuoteStream
+from app.streaming.base import QuoteStream
+from app.streaming.massive_stream import MassiveStream
 
-StreamFactory = Callable[..., ReconnectingQuoteStream]
+StreamFactory = Callable[..., QuoteStream]
 
 # Provider name -> the class that streams it. Mirrors
 # app/providers/registry.py's PROVIDERS map -- same idea (one place
 # to plug in a new source), scoped to whichever providers actually
 # support real-time streaming (not every MarketDataProvider does).
+# "massive" maps to MassiveStream, not MassiveQuoteStream directly --
+# see massive_stream.py's module docstring: MassiveStream tries the
+# real WebSocket first and only falls back to REST polling if this
+# account isn't entitled to it.
 STREAM_FACTORIES: dict[str, StreamFactory] = {
     "alpaca": AlpacaQuoteStream,
-    "massive": MassiveQuoteStream,
+    "massive": MassiveStream,
 }
 
 # One item put on a client queue: either ("status", status, detail) or
