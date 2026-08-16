@@ -4,11 +4,12 @@ NormalizedOption (option_chain.py) already covers "one option contract,
 right now" -- that's all the CSV path and today's calculator need, and
 it stays exactly as-is; nothing here changes it or what depends on it.
 
-These three models exist for provider capabilities nothing in the app
-calls yet (MarketDataProvider.get_historical_data / get_latest_quote /
-stream_quotes, see providers/base.py) -- a live provider (Alpaca, etc.)
-will need them once it actually implements those methods. They are
-additive: no existing code imports this module.
+MarketBar and Quote are provider-facing contracts (see providers/base.py's
+get_historical_data() / get_latest_quote()) -- MarketBar still has no
+caller (get_historical_data has no route yet), but Quote has been live
+since v0.1.9 via GET /market-data/{symbol}/quote. LiveQuote (below) is
+that route's actual HTTP response shape -- a superset of Quote assembled
+by the route itself, not a provider contract.
 """
 
 from datetime import datetime
@@ -55,6 +56,12 @@ class Quote(BaseModel):
     itself, and stretching one model to cover both would mean either
     fake option fields on a stock quote or optional fields nobody can
     tell apart from "not fetched yet" vs. "doesn't apply here."
+
+    This is the provider-facing contract -- every MarketDataProvider's
+    get_latest_quote() returns exactly this shape, unchanged since
+    v0.1.9, and it stays that way here (see LiveQuote below for why the
+    HTTP response is a different, superset shape rather than this one
+    growing new fields every provider would have to fill in).
     """
 
     symbol: str
@@ -62,3 +69,42 @@ class Quote(BaseModel):
     ask: float
     last: float | None = None
     timestamp: MarketTimestamp
+
+
+class LiveQuote(BaseModel):
+    """The normalized shape GET /market-data/{symbol}/quote actually
+    returns to the frontend (v0.1.11) -- a flat superset of Quote, built
+    by the route, not by a provider:
+
+      - `price` is Quote.last (renamed for a frontend that has no
+        reason to know this app's internal "last trade price" naming).
+      - `volume` is best-effort and often None: neither Alpaca's nor
+        Massive's latest-quote/latest-trade endpoints return cumulative
+        daily volume (only a single trade's size) -- the route makes a
+        second, best-effort get_historical_data() call (a trailing
+        window, not strictly today -- see the route for why: a
+        same-day-only query returns nothing on a weekend) to fill this
+        in, and a failure there never fails the quote itself (see
+        market_data.py's route for exactly which exceptions that
+        covers and why).
+      - `provider` is Quote.timestamp.source, promoted to a top-level
+        field -- the frontend contract asked for it directly rather
+        than nested.
+      - `timestamp` is flattened to a plain datetime -- the frontend
+        doesn't need MarketTimestamp's source field twice.
+
+    Deliberately NOT a change to Quote itself: Quote is what all three
+    providers' get_latest_quote() are tested against (see
+    tests/test_alpaca_provider.py etc.) -- adding volume/provider
+    there would mean every provider either fabricates them or leaves
+    them None with no HTTP-layer meaning attached. LiveQuote is purely
+    an HTTP response shape assembled in app/api/market_data.py.
+    """
+
+    symbol: str
+    price: float | None
+    bid: float
+    ask: float
+    volume: int | None = None
+    timestamp: datetime
+    provider: str

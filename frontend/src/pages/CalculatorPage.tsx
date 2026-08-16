@@ -3,6 +3,7 @@ import { analyzeBearPutSpread, ApiError } from "../api/client";
 import { AssumptionsFooter } from "../components/AssumptionsFooter";
 import { DeltaSection } from "../components/DeltaSection";
 import { InputsPanel, type InputMode } from "../components/InputsPanel";
+import { LiveQuotePanel } from "../components/LiveQuotePanel";
 import { MonteCarloSection } from "../components/MonteCarloSection";
 import { PayoffCalculator } from "../components/PayoffCalculator";
 import { PayoffChart } from "../components/PayoffChart";
@@ -126,6 +127,14 @@ export function CalculatorPage() {
         </p>
         {loading && <span className="loading-pill">Recalculating…</span>}
       </header>
+
+      <section className="live-data-proof-of-concept">
+        <p className="live-data-proof-of-concept-label">
+          Live market data test — proves Provider → Backend → Normalized Data → this UI. Independent
+          of the calculator below; picking a provider or fetching a quote never changes any input.
+        </p>
+        <LiveQuotePanel symbol="TSLA" />
+      </section>
 
       <InputsPanel
         form={form}

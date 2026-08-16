@@ -63,6 +63,22 @@ body {
   max-width: 640px;
 }
 
+/* ---------- Standalone live-data proof of concept (v0.1.11) ---------- */
+
+.live-data-proof-of-concept {
+  margin-bottom: 24px;
+  padding: 14px 16px;
+  background: var(--color-surface);
+  border: 1px dashed var(--color-border);
+  border-radius: 10px;
+}
+
+.live-data-proof-of-concept-label {
+  margin: 0 0 10px;
+  font-size: 0.8rem;
+  color: var(--color-text-muted);
+}
+
 .loading-pill {
   position: absolute;
   top: 4px;
@@ -425,22 +441,44 @@ body {
   margin-top: 8px;
 }
 
-.live-quote-result {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: baseline;
-  gap: 16px;
+.live-quote-card {
   margin-top: 8px;
-  padding: 8px 12px;
+  padding: 12px 14px;
   background: var(--color-surface);
   border: 1px solid var(--color-border);
   border-radius: 8px;
   font-size: 0.86rem;
 }
 
-.live-quote-source {
-  font-size: 0.78rem;
+.live-quote-card-title {
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
   color: var(--color-text-muted);
+  margin-bottom: 8px;
+}
+
+.live-quote-card-grid {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  column-gap: 12px;
+  row-gap: 4px;
+  margin: 0;
+}
+
+.live-quote-card-grid dt {
+  color: var(--color-text-muted);
+}
+
+.live-quote-card-grid dd {
+  margin: 0;
+  font-weight: 600;
+  text-align: right;
+}
+
+.live-quote-card-provider {
+  text-transform: capitalize;
 }
 
 /* ---------- Spread Builder preview card ---------- */

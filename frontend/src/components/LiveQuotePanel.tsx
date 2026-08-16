@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { ApiError, getLiveQuote } from "../api/client";
-import type { LiveQuoteProvider, Quote } from "../types/marketData";
+import type { LiveQuote, LiveQuoteProvider } from "../types/marketData";
 import { fmtUsd } from "../utils/format";
 
 interface LiveQuotePanelProps {
@@ -8,7 +8,8 @@ interface LiveQuotePanelProps {
   /** The CSV chain's underlying_price for this symbol, if known --
    * used only to show how far a live quote has drifted from whatever
    * price was baked into the imported file, never fed into any
-   * calculation. */
+   * calculation. Omit for a standalone quote lookup with no chain
+   * context (see the "TSLA" instance on CalculatorPage). */
   csvUnderlyingPrice?: number;
 }
 
@@ -18,24 +19,33 @@ const PROVIDERS: { value: LiveQuoteProvider; label: string }[] = [
   { value: "schwab", label: "Schwab" },
 ];
 
+const fmtVolume = (v: number) => v.toLocaleString();
+const fmtTime = (iso: string) =>
+  new Date(iso).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+
 /**
- * A small, optional widget: pick a provider, fetch a live quote for
- * the symbol currently being browsed, see how it compares to the CSV
- * file's (possibly stale) underlying_price. This is the first place
- * in the app where Alpaca/Massive/Schwab data reaches the UI --
- * everything before this was backend-only (see README section 13).
+ * A small, optional widget: pick a provider, fetch a live quote for a
+ * symbol, see the result -- Symbol / Provider / Price / Bid / Ask /
+ * Volume / Updated. This is the proof that data actually flows
+ * Provider -> Backend -> Normalized Data (LiveQuote) -> this UI; see
+ * README section 13 for the full pipeline. Used two ways: embedded
+ * next to a CSV-imported chain's underlying price (staleness check),
+ * and standalone with symbol="TSLA" on CalculatorPage.
  *
  * Deliberately separate from the calculator: fetching a quote here
  * never changes any input field or triggers a recalculation. It's a
  * side-by-side reference, not a data source the analysis depends on --
  * same "investigate, don't auto-apply" principle the scanner already
- * holds to.
+ * holds to. No API credentials are ever present in this component,
+ * the response it receives, or any request it makes -- they live only
+ * in the backend (see app/config.py); this component only ever sees
+ * the already-normalized LiveQuote JSON.
  */
 export function LiveQuotePanel({ symbol, csvUnderlyingPrice }: LiveQuotePanelProps) {
   const [provider, setProvider] = useState<LiveQuoteProvider>("alpaca");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [quote, setQuote] = useState<Quote | null>(null);
+  const [quote, setQuote] = useState<LiveQuote | null>(null);
 
   const handleFetch = async () => {
     setLoading(true);
@@ -52,7 +62,7 @@ export function LiveQuotePanel({ symbol, csvUnderlyingPrice }: LiveQuotePanelPro
   };
 
   const driftFromCsv =
-    quote?.last != null && csvUnderlyingPrice != null ? quote.last - csvUnderlyingPrice : null;
+    quote?.price != null && csvUnderlyingPrice != null ? quote.price - csvUnderlyingPrice : null;
 
   return (
     <div className="live-quote-panel">
@@ -77,26 +87,29 @@ export function LiveQuotePanel({ symbol, csvUnderlyingPrice }: LiveQuotePanelPro
       {error && <div className="live-quote-error">{error}</div>}
 
       {quote && (
-        <div className="live-quote-result">
-          <span>
-            Bid <strong>{fmtUsd(quote.bid)}</strong>
-          </span>
-          <span>
-            Ask <strong>{fmtUsd(quote.ask)}</strong>
-          </span>
-          {quote.last != null && (
-            <span>
-              Last <strong>{fmtUsd(quote.last)}</strong>
-            </span>
-          )}
-          <span className="live-quote-source">
-            via {quote.timestamp.source} at {new Date(quote.timestamp.value).toLocaleString()}
-          </span>
+        <div className="live-quote-card">
+          <div className="live-quote-card-title">Live Market Data</div>
+          <dl className="live-quote-card-grid">
+            <dt>Symbol</dt>
+            <dd>{quote.symbol}</dd>
+            <dt>Provider</dt>
+            <dd className="live-quote-card-provider">{quote.provider}</dd>
+            <dt>Price</dt>
+            <dd>{quote.price != null ? fmtUsd(quote.price) : "—"}</dd>
+            <dt>Bid</dt>
+            <dd>{fmtUsd(quote.bid)}</dd>
+            <dt>Ask</dt>
+            <dd>{fmtUsd(quote.ask)}</dd>
+            <dt>Volume</dt>
+            <dd>{quote.volume != null ? fmtVolume(quote.volume) : "not available"}</dd>
+            <dt>Updated</dt>
+            <dd>{fmtTime(quote.timestamp)}</dd>
+          </dl>
           {driftFromCsv != null && (
-            <span className={driftFromCsv >= 0 ? "profit-text" : "loss-text"}>
+            <div className={driftFromCsv >= 0 ? "profit-text" : "loss-text"}>
               {driftFromCsv >= 0 ? "+" : ""}
               {fmtUsd(driftFromCsv)} vs. CSV's {fmtUsd(csvUnderlyingPrice!)}
-            </span>
+            </div>
           )}
         </div>
       )}

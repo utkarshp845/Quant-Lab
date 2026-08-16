@@ -1,6 +1,6 @@
 import type { BearPutSpreadRequest, BearPutSpreadResponse } from "../types/bearPutSpread";
 import type { CsvImportResponse } from "../types/csvImport";
-import type { LiveQuoteProvider, Quote } from "../types/marketData";
+import type { LiveQuote, LiveQuoteProvider } from "../types/marketData";
 import type { MonteCarloRequest, MonteCarloResult } from "../types/monteCarlo";
 
 const API_BASE = "http://localhost:8000/api";
@@ -82,9 +82,13 @@ async function getJson<TResponse>(path: string): Promise<TResponse> {
  * backend/app/api/market_data.py). This is separate from
  * analyzeBearPutSpread/importCsv on purpose -- it never touches the
  * calculator or the CSV pipeline, it just asks a provider for a quote.
+ * The response is LiveQuote -- a flat shape (price/volume/provider
+ * promoted to top-level fields) the backend assembles from the
+ * provider layer; no API credentials are ever part of this response
+ * or any request the frontend makes -- they never leave the backend.
  */
-export function getLiveQuote(symbol: string, provider: LiveQuoteProvider): Promise<Quote> {
-  return getJson<Quote>(`/market-data/${encodeURIComponent(symbol)}/quote?provider=${provider}`);
+export function getLiveQuote(symbol: string, provider: LiveQuoteProvider): Promise<LiveQuote> {
+  return getJson<LiveQuote>(`/market-data/${encodeURIComponent(symbol)}/quote?provider=${provider}`);
 }
 
 export function analyzeBearPutSpread(request: BearPutSpreadRequest): Promise<BearPutSpreadResponse> {

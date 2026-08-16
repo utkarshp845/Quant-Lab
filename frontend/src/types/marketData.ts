@@ -1,19 +1,16 @@
 // Types mirroring backend/app/models/market_data.py.
-// Only Quote/MarketTimestamp so far -- MarketBar has no frontend
-// consumer yet (no historical-bars route exists; see
-// GET /api/market-data/{symbol}/quote in api/market_data.py).
+// LiveQuote mirrors LiveQuote (the flat HTTP response shape
+// GET /market-data/{symbol}/quote actually returns, v0.1.11) --
+// not the provider-facing Quote model, which the frontend never sees.
 
-export interface MarketTimestamp {
-  value: string; // ISO datetime string
-  source: string; // provider name, e.g. "alpaca"
-}
-
-export interface Quote {
+export interface LiveQuote {
   symbol: string;
+  price: number | null;
   bid: number;
   ask: number;
-  last: number | null;
-  timestamp: MarketTimestamp;
+  volume: number | null; // best-effort; null if the provider/plan doesn't return it
+  timestamp: string; // ISO datetime string
+  provider: string;
 }
 
 export type LiveQuoteProvider = "alpaca" | "massive" | "schwab";

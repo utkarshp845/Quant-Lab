@@ -535,13 +535,24 @@ What's still missing, and is the actual point of this phase, is
 options-chain data from a live provider — the thing the calculator
 itself actually consumes. Equity data reached the frontend for the
 first time in v0.1.9: `GET /api/market-data/{symbol}/quote`
-(`backend/app/api/market_data.py`) asks any provider for
-`get_latest_quote()` and returns it, and a `LiveQuotePanel`
-(`frontend/src/components/LiveQuotePanel.tsx`) shows it next to a
-CSV-imported chain's underlying price, so you can see at a glance how
-stale the CSV's price is. This is deliberately a side-by-side
-reference, not an input the calculator depends on — picking a provider
-and fetching a quote never changes a form field or triggers a
+(`backend/app/api/market_data.py`) asks a provider for
+`get_latest_quote()`, makes a second best-effort call to
+`get_historical_data()` for the most recent session's volume (neither
+Alpaca's nor Massive's quote/trade endpoints return cumulative daily
+volume), and returns the two combined as `LiveQuote`
+(`backend/app/models/market_data.py`) — a flat `{symbol, price, bid,
+ask, volume, timestamp, provider}` shape assembled by the route, not a
+provider contract (`Quote`, what every provider's `get_latest_quote()`
+actually returns, is unchanged since v0.1.9). `LiveQuotePanel`
+(`frontend/src/components/LiveQuotePanel.tsx`) renders that shape —
+used two ways as of v0.1.11: next to a CSV-imported chain's underlying
+price (so you can see at a glance how stale the CSV's price is), and
+standalone with `symbol="TSLA"` at the top of `CalculatorPage.tsx` as a
+minimal, always-visible proof that data actually flows Provider →
+Backend → Normalized Data → UI, independent of any CSV import. Both
+are deliberately a side-by-side reference, not an input the calculator
+depends on — picking a provider and fetching a quote never changes a
+form field or triggers a
 recalculation, same "investigate, don't auto-apply" principle the
 scanner already holds to. The application must not be architected
 around scraping any specific broker's UI (e.g. Thinkorswim) — that's a
@@ -973,7 +984,9 @@ backend/
       response.py                  Response models (formulas embedded)
       monte_carlo.py               Phase 3: simulation request/response models
       option_chain.py              v0.1.1: NormalizedOption + CSV import response models
-      market_data.py               v0.1.2: MarketBar/Quote/MarketTimestamp -- unused by CSV path today
+      market_data.py               v0.1.2: MarketBar/Quote/MarketTimestamp -- unused by CSV path today.
+                                    v0.1.11 added LiveQuote, the flat HTTP response shape (symbol/price/
+                                    bid/ask/volume/timestamp/provider) GET /market-data/.../quote returns
     calculations/
       stats.py                     normal_cdf
       bear_put_spread.py           All core formulas, one function each
@@ -1002,7 +1015,10 @@ backend/
       market_data.py               v0.1.9: GET /market-data/{symbol}/quote -- first route to call a
                                     provider's get_latest_quote(); specific exception->HTTP status mapping
                                     (ValueError->404, NotImplementedError->501, RuntimeError->503,
-                                    httpx.HTTPStatusError->502), never a blanket 500
+                                    httpx.HTTPStatusError->502), never a blanket 500. v0.1.11 added a
+                                    second, best-effort get_historical_data() call for volume (a trailing
+                                    window, not strictly "today" -- empty on a weekend) and returns the
+                                    combined LiveQuote shape; volume-enrichment failures never fail the quote
   scripts/
     alpaca_manual_check.py         v0.1.4: opt-in, NOT run by pytest -- hits the real Alpaca API with
                                     your own credentials to sanity-check TSLA/NVDA bars + quotes
@@ -1035,7 +1051,9 @@ backend/
                                     manual-check scripts
     test_market_data_api.py        v0.1.9: mocked-provider tests for every exception->HTTP-status branch,
                                     plus a second class proving the same mapping against the real registry
-                                    (no mocking) -- e.g. CSVProvider genuinely returns 501, unmocked
+                                    (no mocking) -- e.g. CSVProvider genuinely returns 501, unmocked.
+                                    v0.1.11 added a class proving volume enrichment is always best-effort
+                                    (null on any failure, never fails the quote itself)
     fixtures/sample_thinkorswim_chain.csv  v0.1.1: example chain export
   requirements.txt
   pytest.ini
@@ -1044,7 +1062,8 @@ frontend/
   src/
     types/                         TS types mirroring backend schemas
       csvImport.ts                 v0.1.1: NormalizedOption / CsvImportResponse types
-      marketData.ts                v0.1.9: Quote / MarketTimestamp types (mirrors market_data.py)
+      marketData.ts                v0.1.11: LiveQuote type (mirrors backend's LiveQuote -- the flat
+                                    response shape, not the provider-facing Quote model)
     calculations/                  TS mirror of the backend formulas
     utils/
       optionToFormState.ts         v0.1.1: NormalizedOption pair -> BearPutSpreadFormState (shared)
@@ -1060,10 +1079,13 @@ frontend/
       OptionChainTable.tsx         v0.1.1: chain table with call/put filter + long/short selection
       SpreadBuilderPreview.tsx     v0.1.1: instant client-side Debit/Max Loss/Profit/Breakeven/Delta
       SpreadScanner.tsx            v0.1.1: tiny scanner UI -- filters, sortable results, Analyze
-      LiveQuotePanel.tsx           v0.1.9: provider select + fetch button, shown next to a CSV chain's
-                                    underlying price -- first UI surface for Alpaca/Massive/Schwab data;
-                                    never feeds the calculator, purely a side-by-side reference
-    pages/CalculatorPage.tsx       Composes the page, owns form state
+      LiveQuotePanel.tsx           v0.1.9: provider select + fetch button -- first UI surface for
+                                    Alpaca/Massive/Schwab data; never feeds the calculator, purely a
+                                    side-by-side reference. Used two ways as of v0.1.11: embedded next to
+                                    a CSV chain's underlying price (staleness check), and standalone with
+                                    symbol="TSLA" on CalculatorPage (minimal, always-visible pipeline proof)
+    pages/CalculatorPage.tsx       Composes the page, owns form state; v0.1.11 added the standalone
+                                    TSLA LiveQuotePanel instance, always visible above the calculator
     App.tsx, main.tsx, index.css
 scripts/
   dev.sh                          v0.1.5: start/stop/restart/status for backend + frontend together
