@@ -775,6 +775,67 @@ body {
   color: var(--color-text-muted);
 }
 
+/* ---------- Historical Data Storage (v0.1.17) ---------- */
+
+.historical-storage-section {
+  margin-top: 16px;
+  padding-top: 14px;
+  border-top: 1px dashed var(--color-border);
+}
+
+.historical-storage-label {
+  margin: 0 0 10px;
+  font-size: 0.8rem;
+  color: var(--color-text-muted);
+}
+
+.historical-storage-controls {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.historical-storage-controls button {
+  background: var(--color-accent);
+  color: white;
+  border: none;
+  border-radius: 8px;
+  padding: 7px 14px;
+  font-size: 0.85rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.historical-storage-controls button:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.historical-storage-status-grid {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  column-gap: 12px;
+  row-gap: 4px;
+  margin: 12px 0 0;
+  font-size: 0.84rem;
+}
+
+.historical-storage-status-grid dt {
+  color: var(--color-text-muted);
+}
+
+.historical-storage-status-grid dd {
+  margin: 0;
+  font-weight: 600;
+  text-align: right;
+}
+
+.historical-storage-status-message {
+  font-weight: 500;
+  font-style: italic;
+}
+
 /* ---------- Spread Builder preview card ---------- */
 
 .spread-builder-card {

@@ -1,11 +1,13 @@
 import type { BearPutSpreadRequest, BearPutSpreadResponse } from "../types/bearPutSpread";
 import type { CsvImportResponse } from "../types/csvImport";
 import type {
+  HistoricalBar,
   HistoricalBarsResponse,
   HistoricalComparisonResponse,
   HistoricalDataProvider,
   LiveQuote,
   LiveQuoteProvider,
+  SaveBarsResponse,
   Timeframe,
 } from "../types/marketData";
 import type { MonteCarloRequest, MonteCarloResult } from "../types/monteCarlo";
@@ -166,6 +168,41 @@ export async function compareHistoricalCsv(
   }
 
   return res.json();
+}
+
+/**
+ * Persists already-fetched bars via POST /api/market-data/history/save
+ * (see backend/app/api/historical_storage.py, v0.1.17). Deliberately
+ * takes the bars the caller already has (from a prior getHistoricalBars
+ * call) rather than symbol/start/end/provider -- saving never re-fetches
+ * from a provider itself, and is never triggered automatically by a
+ * fetch; it's its own explicit action (the "Save to Database" button).
+ */
+export function saveHistoricalBars(bars: HistoricalBar[]): Promise<SaveBarsResponse> {
+  return postJson<SaveBarsResponse>("/market-data/history/save", { bars });
+}
+
+/**
+ * Loads previously-saved bars from GET /api/market-data/{symbol}/history/stored
+ * (v0.1.17) -- never contacts Alpaca/Massive/any provider. Returns the
+ * identical HistoricalBarsResponse shape getHistoricalBars() does, so
+ * "fetched live" and "loaded from database" results render with the
+ * same UI code.
+ */
+export function getStoredHistoricalBars(params: {
+  symbol: string;
+  start: string; // YYYY-MM-DD
+  end: string;
+  timeframe: Timeframe;
+  provider: HistoricalDataProvider;
+}): Promise<HistoricalBarsResponse> {
+  const qs = new URLSearchParams({
+    start: params.start,
+    end: params.end,
+    timeframe: params.timeframe,
+    provider: params.provider,
+  });
+  return getJson<HistoricalBarsResponse>(`/market-data/${encodeURIComponent(params.symbol)}/history/stored?${qs}`);
 }
 
 export async function importCsv(file: File): Promise<CsvImportResponse> {

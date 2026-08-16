@@ -62,6 +62,11 @@ spreadsheet — but with every step shown, not hidden behind a single
   volume differences without auto-correcting any of them. Independent of
   the calculator — see
   [15. Historical market data](#15-historical-market-data-v0116).
+- **(v0.1.17) Persists fetched historical bars to a local SQLite database**
+  and reads them back later with no provider contacted at all — a
+  deliberate "Save to Database" / "Load from Database" action, not
+  automatic. See
+  [16. Historical bar storage](#16-historical-bar-storage-v0117).
 
 ## 3. How to install dependencies
 
@@ -439,19 +444,24 @@ chance of profit."*
 
 ## 10. What is intentionally NOT implemented yet
 
-Machine learning, a database, authentication, user accounts, portfolio
-management. All of that is out of scope for now — the roadmap in section
-11 below has a phase for most of it — which is about correctness and
+Machine learning, authentication, user accounts, portfolio management.
+All of that is out of scope for now — the roadmap in section 11 below
+has a phase for most of it — which is about correctness and
 transparency of a single, manually-driven calculation coming first.
 
 Historical OHLCV bar retrieval landed in v0.1.16 (equities only, TSLA/NVDA,
 Alpaca/Massive — see [15. Historical market data](#15-historical-market-data-v0116)
-below), but **backtesting itself** — running a strategy against that data
-and reporting simulated results — has not: this phase stops at "fetch and
-normalize bars," on purpose, and does not run any calculation against
-them. Historical **options** data (as opposed to equity bars) is also
-still not implemented — same placeholder `get_chain()` situation described
-in section 13.
+below), and a SQLite-backed storage layer for those bars landed in
+v0.1.17 (see [16. Historical bar storage](#16-historical-bar-storage-v0117)
+below) — but **backtesting itself** — running a strategy against that
+data and reporting simulated results — has not: this phase stops at
+"fetch, normalize, and persist bars," on purpose, and does not run any
+calculation against them. Historical **options** data (as opposed to
+equity bars) is also still not implemented — same placeholder
+`get_chain()` situation described in section 13. Also still out of
+scope, deliberately: an automated/scheduled ingestion job (bars are
+only ever saved by a human clicking "Save to Database"), and a
+market-wide scanner or trade journal built on top of stored bars.
 
 **One item is not "not yet" — it is permanently out of scope, at every
 phase, including the paper-trading and signal-generation phases below:**
@@ -1360,6 +1370,118 @@ renders its full report: the headline counts, any CSV row-parse errors,
 and a per-timestamp diff table color-coded the same way the calculator
 already colors P/L (green/red for positive/negative).
 
+## 16. Historical bar storage (v0.1.17)
+
+**Database chosen: SQLite, via Python's stdlib `sqlite3` -- no new
+dependency.** This is a local, single-user, no-auth educational tool
+(section 1); a server-based RDBMS would mean a second process to
+install, configure, and keep running for a feature scoped to "persist
+bars, read them back." SQLite is a real relational database with real
+constraints (the UNIQUE index below is enforced by the engine) -- it
+ships with Python and stores everything in one plain file. Same
+judgment `app/config.py`'s own docstring already applies to skipping a
+settings library until the app outgrows `os.environ.get()`, extended
+here to skipping a database server and an ORM until this app outgrows
+one table. The file lives at `backend/data/historical_bars.db` by
+default (gitignored, created automatically on first save), overridable
+via `DATABASE_PATH` (see `.env.example`).
+
+**Schema -- one table:**
+```sql
+CREATE TABLE historical_bars (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    provider TEXT NOT NULL,
+    symbol TEXT NOT NULL,
+    timeframe TEXT NOT NULL,
+    timestamp TEXT NOT NULL,   -- ISO-8601 UTC
+    open REAL NOT NULL,
+    high REAL NOT NULL,
+    low REAL NOT NULL,
+    close REAL NOT NULL,
+    volume INTEGER NOT NULL,
+    created_at TEXT NOT NULL,  -- ISO-8601 UTC, set when the row is saved
+    UNIQUE (provider, symbol, timeframe, timestamp)
+);
+```
+`UNIQUE (provider, symbol, timeframe, timestamp)` is the natural
+identity of a bar. `provider` stays IN the key deliberately: Alpaca and
+Massive can (and do, per `scripts/cross_validate_providers.py`) report
+slightly different OHLCV for what's nominally "the same" bar, so both
+are kept as independent rows rather than one overwriting the other.
+
+**Storage/repository layer -- `app/storage/`, the only place SQL is
+written for this feature:**
+```
+Provider (app/providers/*.py)           API response -> HistoricalBar
+Storage  (app/storage/historical_bar_repository.py)  HistoricalBar -> database row, and back
+API routes (app/api/historical_storage.py)           call save_bars()/get_bars(), never write SQL
+```
+`app/storage/db.py` owns the SQLite connection (a new one per call,
+never a long-lived shared connection -- see its docstring for why) and
+schema creation. `app/storage/historical_bar_repository.py` exposes
+exactly two functions, both HistoricalBar in/out, never a raw
+`sqlite3.Row` or dict past this file's boundary: `save_bars()` (INSERT
+OR IGNORE, so re-saving an already-stored bar is a no-op, not an error
+-- see `SaveResult`'s `inserted`/`skipped_duplicates` split) and
+`get_bars()` (a plain SELECT by symbol/timeframe/provider/date-range,
+oldest-first). Neither this repository nor `app/api/historical_storage.py`
+imports anything from `app/providers/` -- checked by
+`tests/test_historical_bar_repository.py::TestProviderIndependence`,
+the same "source text check catches an import" idiom
+`tests/test_providers.py::TestEngineHasNoCsvDependency` already uses
+for the calculator's provider-independence.
+
+**One normalized shape end to end.** `HistoricalBar` (`app/models/
+market_data.py`, first introduced in v0.1.16 as GET `.../history`'s
+response shape) gained a `timeframe` field in v0.1.17 and is now what
+the storage layer saves and loads too -- the same object a live
+provider fetch returns is what a database save/load round-trips,
+verbatim (see `tests/test_historical_storage_api.py::TestExactWorkflow`,
+which asserts the loaded bars equal the originally fetched ones
+field-for-field). Nothing downstream of a provider -- this route, the
+storage layer, any future Quant Lab or scanner code -- can tell whether
+a `HistoricalBar` came from Alpaca, Massive, a CSV, or the database;
+they're all the identical shape.
+
+**Two routes, both in `app/api/historical_storage.py`:**
+- `POST /market-data/history/save` -- takes the bars a caller already
+  fetched (`{"bars": [...]}`), NOT symbol/start/end/provider. Saving
+  never re-fetches from a provider itself, and is never an automatic
+  side effect of a fetch -- it's the UI's explicit "Save to Database"
+  button, per this phase's spec, which asked for a deliberate save
+  action rather than persisting every request silently.
+- `GET /market-data/{symbol}/history/stored` -- returns the identical
+  `HistoricalBarsResponse` shape `GET .../history` does, so the
+  frontend renders "fetched live" and "loaded from database" results
+  with the same code. `provider` stays a required query param, same
+  reasoning as the schema's UNIQUE key: reading "TSLA daily bars"
+  without saying which provider's copy would be ambiguous once more
+  than one provider's bars for the same symbol/timeframe/period have
+  ever been saved.
+
+**UI -- "Historical Data Storage"**, a new block on `HistoricalDataPanel.tsx`
+below the existing fetch/compare controls, sharing the same
+Provider/Symbol/Timeframe/Start/End selection: **Fetch from Provider**,
+**Save to Database**, **Load from Database**, displaying provider,
+symbol, timeframe, bar count, first/last timestamp, and a storage-status
+line (e.g. "Saved: 10 bar(s) total -- 10 new, 0 already in the
+database." / "Loaded 10 bar(s) from the database -- alpaca was not
+contacted."). "Save to Database" is disabled until a fetch has bars in
+hand -- there's deliberately no way to save data this UI hasn't shown you.
+
+**Verified against real data, the exact workflow this phase's spec
+called for**: fetched real TSLA daily bars from Alpaca, saved them,
+confirmed all 10 rows in the actual SQLite file via `sqlite3` directly,
+loaded them back through the UI, and the loaded rows matched the
+fetched ones exactly. `tests/test_historical_storage_api.py::TestExactWorkflow`
+automates the full A-G scenario end to end, including the "provider now
+disabled" step: it swaps in a provider stub that raises on every call,
+proves the live-fetch route genuinely returns 503, and proves
+`GET .../history/stored` still returns the same 10 bars regardless --
+`app/api/historical_storage.py` never imports `registry.get_provider`
+at all, so there is nothing in that route capable of contacting Alpaca
+even if it wanted to.
+
 ---
 
 ## Project structure
@@ -1367,8 +1489,10 @@ already colors P/L (green/red for positive/negative).
 ```
 backend/
   app/
-    main.py                        FastAPI app, CORS, router mount
-    config.py                      v0.1.2: the app's one os.environ touchpoint (provider selection + credentials)
+    main.py                        FastAPI app, CORS, router mount. v0.1.17 mounted historical_storage_router
+    config.py                      v0.1.2: the app's one os.environ touchpoint (provider selection + credentials).
+                                    v0.1.17 added get_database_path() (DATABASE_PATH, defaults to
+                                    backend/data/historical_bars.db) for app/storage/
     models/
       bear_put_spread.py           Input models + validation
       response.py                  Response models (formulas embedded)
@@ -1380,10 +1504,14 @@ backend/
                                     v0.1.15: LiveQuote.bid/.ask became optional (None for the Massive
                                     polling fallback's bar-derived quotes, which have no bid/ask at all).
                                     v0.1.16: added HistoricalBar (flat HTTP shape GET .../history returns,
-                                    same MarketBar-flattening pattern as LiveQuote/Quote) + HistoricalBarsResponse
+                                    same MarketBar-flattening pattern as LiveQuote/Quote) + HistoricalBarsResponse.
+                                    v0.1.17: HistoricalBar gained a `timeframe` field -- it's now also what
+                                    the storage layer saves/loads, not just an HTTP response shape
       historical_comparison.py     v0.1.16: response shapes for POST /market-data/history/compare -- see
                                     that route's docstring for why there is deliberately no pass/fail
                                     verdict field anywhere in this shape (numbers only, reader decides)
+      historical_storage.py        v0.1.17: SaveBarsRequest/SaveBarsResponse for POST .../history/save --
+                                    the stored-read route reuses HistoricalBarsResponse as-is, on purpose
     calculations/
       stats.py                     normal_cdf
       bear_put_spread.py           All core formulas, one function each
@@ -1414,6 +1542,15 @@ backend/
                                     quotes, Schwab Trader API, OAuth2 access-token refresh); get_chain
                                     (options) still a stub -- see docstring for confirmed-vs-guessed fields
       registry.py                  Provider-name -> class map + MARKET_DATA_PROVIDER-driven default
+    storage/                       v0.1.17: persisted historical-bar storage (see README section 16) --
+                                    the only package that writes SQL for market data
+      db.py                        SQLite connection (new one per call, no long-lived shared connection)
+                                    + schema creation (historical_bars table, UNIQUE provider+symbol+
+                                    timeframe+timestamp)
+      historical_bar_repository.py save_bars() / get_bars() -- HistoricalBar in, HistoricalBar out, never
+                                    a raw sqlite3.Row past this file's own boundary. Never imports
+                                    app.providers -- checked by
+                                    test_historical_bar_repository.py::TestProviderIndependence
     streaming/                     v0.1.12: backend-only real-time streaming (see README section 14)
       base.py                      v0.1.13: ReconnectingQuoteStream -- the reconnect/backoff loop and the
                                     three provider-agnostic exceptions (StreamCredentialsMissing/
@@ -1462,6 +1599,12 @@ backend/
                                     bars (via ingestion/ohlcv_csv.py), diffs it against fetch_normalized_bars()'s
                                     provider call for the same symbol/timeframe/period, reports row-count/
                                     timestamp/OHLC/volume differences without auto-correcting any of them
+      historical_storage.py        v0.1.17: POST /market-data/history/save (bars the caller already
+                                    fetched -> app.storage.historical_bar_repository.save_bars(), never a
+                                    second provider call) + GET /market-data/{symbol}/history/stored
+                                    (repository.get_bars() -> the identical HistoricalBarsResponse shape
+                                    GET .../history returns -- provider stays a required query param since
+                                    the storage layer's identity key includes it)
   scripts/
     alpaca_manual_check.py         v0.1.4: opt-in, NOT run by pytest -- hits the real Alpaca API with
                                     your own credentials to sanity-check TSLA/NVDA bars + quotes
@@ -1529,6 +1672,15 @@ backend/
                                     only/API-only timestamps, wrong-symbol and out-of-range CSV rows
                                     excluded (and noted), CSV parse errors surfaced without failing the
                                     request, the same exception mapping as test_historical_data_api.py
+    test_historical_bar_repository.py  v0.1.17: save_bars()/get_bars() against a throwaway tmp_path SQLite
+                                    file per test -- insertion, retrieval, duplicate protection, multiple
+                                    symbols/timeframes/providers not bleeding into each other, inclusive
+                                    date-range retrieval, oldest-first ordering, and TestProviderIndependence
+                                    (source-text check: this module never imports app.providers)
+    test_historical_storage_api.py v0.1.17: route tests for POST .../history/save and GET .../history/stored
+                                    (each with an isolated DATABASE_PATH per test), plus TestExactWorkflow --
+                                    the literal fetch -> save -> confirm -> load -> verify-match -> disable-
+                                    provider -> load-again scenario this phase's spec asked to be proven
     fixtures/sample_thinkorswim_chain.csv  v0.1.1: example chain export -- an OPTIONS-CHAIN snapshot
                                     (underlying "MCL"), not an OHLCV bar time series; cannot be used as-is
                                     with the v0.1.16 historical-data comparison route -- see README section 15
@@ -1547,7 +1699,8 @@ frontend/
                                     (the Massive polling fallback's bar-derived quotes have neither).
                                     v0.1.16 added HistoricalBar/HistoricalBarsResponse/
                                     HistoricalComparisonResponse (mirroring the backend shapes exactly)
-                                    and the HistoricalDataProvider/HistoricalDataSymbol/Timeframe unions
+                                    and the HistoricalDataProvider/HistoricalDataSymbol/Timeframe unions.
+                                    v0.1.17: HistoricalBar gained a `timeframe` field; added SaveBarsResponse
     calculations/                  TS mirror of the backend formulas
     utils/
       optionToFormState.ts         v0.1.1: NormalizedOption pair -> BearPutSpreadFormState (shared)
@@ -1555,7 +1708,8 @@ frontend/
     api/client.ts                  Fetch wrapper + error formatting + importCsv() + getLiveQuote();
                                     exports API_BASE so the streaming hook derives its ws:// URL from
                                     the same origin instead of hardcoding it a second time. v0.1.16 added
-                                    getHistoricalBars() + compareHistoricalCsv() (multipart upload)
+                                    getHistoricalBars() + compareHistoricalCsv() (multipart upload).
+                                    v0.1.17 added saveHistoricalBars() + getStoredHistoricalBars()
     hooks/
       useQuoteStream.ts            v0.1.12 (as useAlpacaQuoteStream.ts, renamed + parameterized by
                                     `provider` in v0.1.13 once Massive needed the same hook): owns the
@@ -1591,7 +1745,11 @@ frontend/
                                     "Compare against CSV" (uploads a file, renders the full comparison
                                     report: headline counts, CSV row errors, per-timestamp diff table).
                                     Never touches the calculator, same "investigate, don't auto-apply"
-                                    principle as LiveQuotePanel/LiveStreamPanel
+                                    principle as LiveQuotePanel/LiveStreamPanel. v0.1.17 added a
+                                    "Historical Data Storage" block (own result/status state) reusing
+                                    the same controls -- Fetch from Provider / Save to Database / Load
+                                    from Database, with a storage-status line; "Save" is disabled until
+                                    a fetch is in hand
     pages/CalculatorPage.tsx       Composes the page, owns form state; v0.1.11 added the standalone
                                     TSLA LiveQuotePanel instance, always visible above the calculator.
                                     v0.1.12 added LiveStreamPanel directly below it. v0.1.16 added

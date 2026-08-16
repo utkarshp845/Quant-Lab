@@ -1,5 +1,11 @@
 import { useState } from "react";
-import { ApiError, compareHistoricalCsv, getHistoricalBars } from "../api/client";
+import {
+  ApiError,
+  compareHistoricalCsv,
+  getHistoricalBars,
+  getStoredHistoricalBars,
+  saveHistoricalBars,
+} from "../api/client";
 import type {
   HistoricalBar,
   HistoricalBarsResponse,
@@ -66,6 +72,17 @@ export function HistoricalDataPanel() {
   const [compareError, setCompareError] = useState<string | null>(null);
   const [comparison, setComparison] = useState<HistoricalComparisonResponse | null>(null);
 
+  // Historical Data Storage sub-section (v0.1.17) -- deliberately its
+  // own result/status state, separate from `result` above: "Fetch bars"
+  // above is the existing provider-fetch test surface (also feeds the
+  // CSV comparison); this block additionally proves Save/Load work,
+  // using the same shared provider/symbol/timeframe/start/end controls.
+  const [storageAction, setStorageAction] = useState<"fetch" | "save" | "load" | null>(null);
+  const [storageLoading, setStorageLoading] = useState(false);
+  const [storageError, setStorageError] = useState<string | null>(null);
+  const [storageResult, setStorageResult] = useState<HistoricalBarsResponse | null>(null);
+  const [storageStatus, setStorageStatus] = useState<string | null>(null);
+
   const handleFetch = async () => {
     setFetchLoading(true);
     setFetchError(null);
@@ -95,6 +112,63 @@ export function HistoricalDataPanel() {
       setCompareError(err instanceof ApiError ? err.message : "Could not reach the backend to run the comparison.");
     } finally {
       setCompareLoading(false);
+    }
+  };
+
+  const handleStorageFetch = async () => {
+    setStorageAction("fetch");
+    setStorageLoading(true);
+    setStorageError(null);
+    setStorageStatus(null);
+    try {
+      const data = await getHistoricalBars({ symbol, start, end, timeframe, provider });
+      setStorageResult(data);
+      setStorageStatus(`Fetched ${data.bar_count} bar(s) from ${data.provider} -- not yet saved.`);
+    } catch (err) {
+      setStorageResult(null);
+      setStorageError(err instanceof ApiError ? err.message : "Could not reach the backend to fetch bars.");
+    } finally {
+      setStorageLoading(false);
+    }
+  };
+
+  const handleSaveToDatabase = async () => {
+    if (!storageResult || storageResult.bars.length === 0) {
+      setStorageError("Fetch bars first -- there is nothing to save yet.");
+      return;
+    }
+    setStorageAction("save");
+    setStorageLoading(true);
+    setStorageError(null);
+    try {
+      const saved = await saveHistoricalBars(storageResult.bars);
+      setStorageStatus(
+        `Saved: ${saved.total} bar(s) total -- ${saved.inserted} new, ${saved.skipped_duplicates} already in the database.`,
+      );
+    } catch (err) {
+      setStorageError(err instanceof ApiError ? err.message : "Could not reach the backend to save these bars.");
+    } finally {
+      setStorageLoading(false);
+    }
+  };
+
+  const handleLoadFromDatabase = async () => {
+    setStorageAction("load");
+    setStorageLoading(true);
+    setStorageError(null);
+    try {
+      const data = await getStoredHistoricalBars({ symbol, start, end, timeframe, provider });
+      setStorageResult(data);
+      setStorageStatus(
+        data.bar_count > 0
+          ? `Loaded ${data.bar_count} bar(s) from the database -- ${provider} was not contacted.`
+          : `No bars stored yet for ${symbol}/${timeframe}/${provider} in this date range.`,
+      );
+    } catch (err) {
+      setStorageResult(null);
+      setStorageError(err instanceof ApiError ? err.message : "Could not reach the backend to load stored bars.");
+    } finally {
+      setStorageLoading(false);
     }
   };
 
@@ -199,6 +273,54 @@ export function HistoricalDataPanel() {
         {compareError && <div className="live-quote-error">{compareError}</div>}
 
         {comparison && <ComparisonReport data={comparison} />}
+      </div>
+
+      <div className="historical-storage-section">
+        <p className="historical-storage-label">
+          Historical Data Storage — persists fetched bars to a local database (v0.1.17) and reads them
+          back without contacting the provider again. Uses the same symbol/provider/timeframe/date
+          controls above. Nothing is saved automatically; each action below is deliberate.
+        </p>
+        <div className="historical-storage-controls">
+          <button type="button" onClick={handleStorageFetch} disabled={storageLoading}>
+            {storageLoading && storageAction === "fetch" ? "Fetching…" : "Fetch from Provider"}
+          </button>
+          <button
+            type="button"
+            onClick={handleSaveToDatabase}
+            disabled={storageLoading || !storageResult || storageResult.bars.length === 0}
+          >
+            {storageLoading && storageAction === "save" ? "Saving…" : "Save to Database"}
+          </button>
+          <button type="button" onClick={handleLoadFromDatabase} disabled={storageLoading}>
+            {storageLoading && storageAction === "load" ? "Loading…" : "Load from Database"}
+          </button>
+        </div>
+
+        {storageError && <div className="live-quote-error">{storageError}</div>}
+
+        {(storageResult || storageStatus) && (
+          <dl className="historical-storage-status-grid">
+            <dt>Provider</dt>
+            <dd>{storageResult?.provider ?? provider}</dd>
+            <dt>Symbol</dt>
+            <dd>{storageResult?.symbol ?? symbol}</dd>
+            <dt>Timeframe</dt>
+            <dd>{storageResult?.timeframe ?? timeframe}</dd>
+            <dt>Number of bars</dt>
+            <dd>{storageResult?.bar_count ?? 0}</dd>
+            <dt>First timestamp</dt>
+            <dd>{storageResult && storageResult.bar_count > 0 ? storageResult.bars[0].timestamp : "—"}</dd>
+            <dt>Last timestamp</dt>
+            <dd>
+              {storageResult && storageResult.bar_count > 0
+                ? storageResult.bars[storageResult.bars.length - 1].timestamp
+                : "—"}
+            </dd>
+            <dt>Storage status</dt>
+            <dd className="historical-storage-status-message">{storageStatus ?? "—"}</dd>
+          </dl>
+        )}
       </div>
     </div>
   );

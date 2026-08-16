@@ -111,7 +111,7 @@ def fetch_normalized_bars(
     provider_instance = get_provider(provider)  # raises ValueError for an unknown provider name
     kwargs = _provider_kwargs(provider, timeframe)
     bars = provider_instance.get_historical_data(symbol=symbol, start=start, end=end, **kwargs)
-    return [HistoricalBar.from_market_bar(b) for b in bars]
+    return [HistoricalBar.from_market_bar(b, timeframe=timeframe) for b in bars]
 
 
 @router.get("/market-data/{symbol}/history", response_model=HistoricalBarsResponse)
