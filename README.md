@@ -936,6 +936,29 @@ inside a still-valid 7-day refresh window) is fine; automating a
 brokerage login is not, regardless of which AI assistant or script is
 doing the automating.
 
+**Cross-validating Alpaca vs. Massive (v0.1.10).** Once two
+independent providers implement the same capability, they can check
+each other — a real correctness signal neither provider's own mocked
+tests can give, the same "two independent implementations agreeing" logic
+this app already uses for Phase 2 vs. Phase 3. `scripts/cross_validate_providers.py`
+(opt-in, not run by pytest, same as the other manual-check scripts)
+pulls the same daily bars for TSLA/NVDA from both providers and diffs
+them. Run for real against both accounts: **every O/H/L/C value across
+16 shared trading days (8 days × 2 symbols) agreed within 0.15%** —
+strong evidence both providers are parsing and normalizing real data
+correctly, not just passing their own fixtures. Volume was expected to
+diverge sharply and did: Alpaca's free `iex` feed reported roughly
+2-4% of Massive's consolidated (all-exchange) volume for the same
+bars, consistent with IEX's known share of total US equity
+volume — a feed-coverage difference, not a bug, and the script labels
+it as such rather than flagging it. The latest-quote comparison
+gracefully skips Massive (not entitled on the free plan — see v0.1.7)
+rather than crashing, and still surfaces the same odd free-tier Alpaca
+quotes noted when that provider was first built (a `$0.00` ask for
+NVDA, an implausibly wide TSLA spread) — worth remembering before
+trusting `get_latest_quote()` for anything time-sensitive on a free
+plan, independent of which provider serves it.
+
 ---
 
 ## Project structure
@@ -987,6 +1010,8 @@ backend/
     schwab_oauth_bootstrap.py      v0.1.8: ONE-TIME INTERACTIVE -- builds the Schwab login URL, walks
                                     you through logging in yourself, exchanges the resulting code for a
                                     refresh token. Re-run roughly every 7 days when it expires.
+    cross_validate_providers.py    v0.1.10: opt-in, NOT run by pytest -- diffs real Alpaca vs. Massive
+                                    bars/quotes for TSLA/NVDA; see README's cross-validation callout above
   tests/
     test_calculations.py           Pure-function unit tests + graduation example
     test_validation.py             Input validation tests
@@ -1005,6 +1030,9 @@ backend/
                                     incl. OAuth2 access-token refresh/caching/re-refresh (injectable clock,
                                     no real timing dependency) and per-credential missing-env-var checks
     test_config.py                 v0.1.2: MARKET_DATA_PROVIDER + credential env-var reading
+    test_cross_validate_providers.py  v0.1.10: unit tests for pct_diff's divide-by-zero handling --
+                                    the script's real I/O is deliberately untested, same as the other
+                                    manual-check scripts
     test_market_data_api.py        v0.1.9: mocked-provider tests for every exception->HTTP-status branch,
                                     plus a second class proving the same mapping against the real registry
                                     (no mocking) -- e.g. CSVProvider genuinely returns 501, unmocked
