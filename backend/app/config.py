@@ -16,8 +16,16 @@ grows past a handful of values.
 """
 
 import os
+from pathlib import Path
 
 DEFAULT_MARKET_DATA_PROVIDER = "csv"
+
+# backend/data/historical_bars.db -- a plain file next to the app, not
+# backend/.env-adjacent or repo-root: computed from this file's own
+# location so it resolves the same way regardless of the process's cwd
+# (uvicorn run from backend/, pytest run from backend/, scripts/dev.sh
+# run from the repo root -- all three happen in practice).
+DEFAULT_DATABASE_PATH = str(Path(__file__).resolve().parent.parent / "data" / "historical_bars.db")
 
 
 def get_configured_provider_name() -> str:
@@ -46,3 +54,14 @@ def get_provider_credential(provider_name: str, credential: str) -> str | None:
     env_var = f"{provider_name.upper()}_{credential.upper()}"
     value = os.environ.get(env_var)
     return value if value else None
+
+
+def get_database_path() -> str:
+    """Where the SQLite database file for persisted historical bars lives
+    (v0.1.17 -- see app/storage/db.py). Reads DATABASE_PATH (an absolute
+    or relative file path), defaulting to DEFAULT_DATABASE_PATH above.
+    Read fresh on every call, like every other function in this module --
+    lets tests point at a throwaway path via monkeypatch.setenv without
+    any caching to work around.
+    """
+    return os.environ.get("DATABASE_PATH", DEFAULT_DATABASE_PATH)

@@ -12,6 +12,10 @@ app/api/historical_data.py) -- before that it existed only as the target
 shape providers' get_historical_data() already returned. LiveQuote and
 HistoricalBar (below) are those two routes' actual HTTP response shapes --
 flat supersets assembled by the route itself, never a provider contract.
+HistoricalBar (v0.1.17) is also what the storage layer (app/storage/)
+persists and loads -- see that module for why a database is just another
+source/sink for the same normalized shape, not a reason to invent a
+second one.
 """
 
 from datetime import date, datetime
@@ -51,22 +55,31 @@ class MarketBar(BaseModel):
 
 
 class HistoricalBar(BaseModel):
-    """The normalized shape GET /market-data/{symbol}/history actually
-    returns to the frontend (v0.1.16) -- a flat, provider-independent
-    view of MarketBar, built by the route, not by a provider. Mirrors
-    exactly how LiveQuote flattens Quote (see below): `provider` is
-    promoted from MarketBar.timestamp.source to a top-level field, and
-    `timestamp` is flattened to a plain datetime instead of a nested
-    MarketTimestamp.
+    """The normalized, provider-independent historical-bar shape used
+    everywhere OUTSIDE a provider implementation (v0.1.16) -- the HTTP
+    response GET /market-data/{symbol}/history actually returns, AND
+    (v0.1.17) what the storage layer (app/storage/) saves and loads.
+    One canonical shape flowing provider -> route -> storage -> UI is
+    the whole point: nothing downstream of a provider (this route, the
+    storage layer, any future Quant Lab consumer) should have to know
+    or care whether a HistoricalBar came from Alpaca, Massive, or the
+    database -- see app/storage/historical_bar_repository.py's module
+    docstring for the storage half of that rule.
 
-    This is the "provider-independent historical bar model" the Quant
-    Lab engine (and any other downstream consumer) should build
-    against -- never a provider's raw JSON response shape. Deliberately
-    NOT a change to MarketBar itself, for the same reason LiveQuote
-    isn't a change to Quote: MarketBar is what every provider's
-    get_historical_data() is tested against (see
-    tests/test_alpaca_provider.py etc.); this is purely an HTTP
-    response shape, assembled in app/api/historical_data.py.
+    Flat, the same way LiveQuote flattens Quote: `provider` is promoted
+    from MarketBar.timestamp.source to a top-level field, `timestamp` is
+    a plain datetime instead of a nested MarketTimestamp, and (v0.1.17)
+    `timeframe` is included per-bar -- even though it's constant across
+    one fetch/save/load call, a bar's timeframe is as much a part of its
+    identity as its provider (see the storage layer's UNIQUE constraint:
+    provider+symbol+timeframe+timestamp), so it travels with the bar
+    itself rather than living only at the surrounding response's top level.
+
+    Deliberately NOT a change to MarketBar itself, for the same reason
+    LiveQuote isn't a change to Quote: MarketBar is what every
+    provider's get_historical_data() is tested against (see
+    tests/test_alpaca_provider.py etc.); this is purely a shape
+    assembled by callers of a provider, never a provider contract.
     """
 
     symbol: str
@@ -77,9 +90,10 @@ class HistoricalBar(BaseModel):
     close: float
     volume: int
     provider: str
+    timeframe: str
 
     @classmethod
-    def from_market_bar(cls, bar: MarketBar) -> "HistoricalBar":
+    def from_market_bar(cls, bar: MarketBar, *, timeframe: str) -> "HistoricalBar":
         return cls(
             symbol=bar.symbol,
             timestamp=bar.timestamp.value,
@@ -89,6 +103,7 @@ class HistoricalBar(BaseModel):
             close=bar.close,
             volume=bar.volume,
             provider=bar.timestamp.source,
+            timeframe=timeframe,
         )
 
 

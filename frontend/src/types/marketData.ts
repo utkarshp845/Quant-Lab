@@ -74,6 +74,7 @@ export interface HistoricalBar {
   close: number;
   volume: number;
   provider: string;
+  timeframe: string; // v0.1.17: travels with the bar itself -- see backend's HistoricalBar docstring
 }
 
 export interface HistoricalBarsResponse {
@@ -84,6 +85,19 @@ export interface HistoricalBarsResponse {
   end: string;
   bar_count: number;
   bars: HistoricalBar[];
+}
+
+// ---- Historical-bar storage (v0.1.17) ----
+// Mirrors backend/app/models/historical_storage.py's SaveBarsResponse.
+// GET .../history/stored returns HistoricalBarsResponse (above) --
+// deliberately the identical shape a live provider fetch returns, so
+// the UI can render "fetched from provider" and "loaded from database"
+// results with the same code.
+
+export interface SaveBarsResponse {
+  total: number;
+  inserted: number;
+  skipped_duplicates: number;
 }
 
 // Mirrors backend/app/models/historical_comparison.py exactly --
