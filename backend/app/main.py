@@ -1,9 +1,10 @@
 """Pandey Quant Lab -- FastAPI application entrypoint.
 
 v0.1 scope: a transparent, manually-entered bear put spread
-calculator. No live market data, no brokerage connectivity, no trade
-execution, no database, no auth. See the README for the full list of
-assumptions and what is intentionally not implemented yet.
+calculator, with an optional live equity quote lookup (v0.1.9) layered
+on top -- no brokerage connectivity, no trade execution, no database,
+no auth. See the README for the full list of assumptions and what is
+intentionally not implemented yet.
 """
 
 from fastapi import FastAPI
@@ -11,6 +12,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.bear_put_spread import router as bear_put_spread_router
 from app.api.csv_import import router as csv_import_router
+from app.api.market_data import router as market_data_router
 
 app = FastAPI(
     title="Pandey Quant Lab API",
@@ -37,6 +39,7 @@ app.add_middleware(
 
 app.include_router(bear_put_spread_router, prefix="/api")
 app.include_router(csv_import_router, prefix="/api")
+app.include_router(market_data_router, prefix="/api")
 
 
 @app.get("/api/health")

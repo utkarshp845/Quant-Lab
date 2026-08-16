@@ -52,6 +52,10 @@ spreadsheet — but with every step shown, not hidden behind a single
   buy/sell recommendation.
 - Validates inputs (strike ordering, non-negative prices, delta range,
   etc.) and reports clear errors instead of producing nonsense numbers.
+- **(v0.1.9) Shows a live equity quote** next to a CSV-imported chain's
+  underlying price (pick Alpaca, Massive, or Schwab) — a reference for how
+  stale the imported price is, not an input the calculator uses. See
+  [13. Market data provider architecture](#13-market-data-provider-architecture-v012).
 
 ## 3. How to install dependencies
 
@@ -529,11 +533,18 @@ and honors a `MARKET_DATA_PROVIDER` env var, so picking a provider is a
 config change, never a code change in the calculator or scanner.
 What's still missing, and is the actual point of this phase, is
 options-chain data from a live provider — the thing the calculator
-itself actually consumes; equity data from Alpaca/Massive/Schwab isn't
-wired into any API route or the frontend yet either (deliberately kept
-backend-only for now — see the roadmap discussion around
-v0.1.4/v0.1.6/v0.1.8). The application must not be architected around
-scraping any specific broker's UI (e.g. Thinkorswim) — that's a
+itself actually consumes. Equity data reached the frontend for the
+first time in v0.1.9: `GET /api/market-data/{symbol}/quote`
+(`backend/app/api/market_data.py`) asks any provider for
+`get_latest_quote()` and returns it, and a `LiveQuotePanel`
+(`frontend/src/components/LiveQuotePanel.tsx`) shows it next to a
+CSV-imported chain's underlying price, so you can see at a glance how
+stale the CSV's price is. This is deliberately a side-by-side
+reference, not an input the calculator depends on — picking a provider
+and fetching a quote never changes a form field or triggers a
+recalculation, same "investigate, don't auto-apply" principle the
+scanner already holds to. The application must not be architected
+around scraping any specific broker's UI (e.g. Thinkorswim) — that's a
 fragile, single implementation of the interface, not the interface
 itself.
 
@@ -925,6 +936,29 @@ inside a still-valid 7-day refresh window) is fine; automating a
 brokerage login is not, regardless of which AI assistant or script is
 doing the automating.
 
+**Cross-validating Alpaca vs. Massive (v0.1.10).** Once two
+independent providers implement the same capability, they can check
+each other — a real correctness signal neither provider's own mocked
+tests can give, the same "two independent implementations agreeing" logic
+this app already uses for Phase 2 vs. Phase 3. `scripts/cross_validate_providers.py`
+(opt-in, not run by pytest, same as the other manual-check scripts)
+pulls the same daily bars for TSLA/NVDA from both providers and diffs
+them. Run for real against both accounts: **every O/H/L/C value across
+16 shared trading days (8 days × 2 symbols) agreed within 0.15%** —
+strong evidence both providers are parsing and normalizing real data
+correctly, not just passing their own fixtures. Volume was expected to
+diverge sharply and did: Alpaca's free `iex` feed reported roughly
+2-4% of Massive's consolidated (all-exchange) volume for the same
+bars, consistent with IEX's known share of total US equity
+volume — a feed-coverage difference, not a bug, and the script labels
+it as such rather than flagging it. The latest-quote comparison
+gracefully skips Massive (not entitled on the free plan — see v0.1.7)
+rather than crashing, and still surfaces the same odd free-tier Alpaca
+quotes noted when that provider was first built (a `$0.00` ask for
+NVDA, an implausibly wide TSLA spread) — worth remembering before
+trusting `get_latest_quote()` for anything time-sensitive on a free
+plan, independent of which provider serves it.
+
 ---
 
 ## Project structure
@@ -965,6 +999,10 @@ backend/
     api/
       bear_put_spread.py           Route handlers, calls calculations in sequence
       csv_import.py                Upload -> CSVProvider.get_chain() -> return chain (no analysis math)
+      market_data.py               v0.1.9: GET /market-data/{symbol}/quote -- first route to call a
+                                    provider's get_latest_quote(); specific exception->HTTP status mapping
+                                    (ValueError->404, NotImplementedError->501, RuntimeError->503,
+                                    httpx.HTTPStatusError->502), never a blanket 500
   scripts/
     alpaca_manual_check.py         v0.1.4: opt-in, NOT run by pytest -- hits the real Alpaca API with
                                     your own credentials to sanity-check TSLA/NVDA bars + quotes
@@ -972,6 +1010,8 @@ backend/
     schwab_oauth_bootstrap.py      v0.1.8: ONE-TIME INTERACTIVE -- builds the Schwab login URL, walks
                                     you through logging in yourself, exchanges the resulting code for a
                                     refresh token. Re-run roughly every 7 days when it expires.
+    cross_validate_providers.py    v0.1.10: opt-in, NOT run by pytest -- diffs real Alpaca vs. Massive
+                                    bars/quotes for TSLA/NVDA; see README's cross-validation callout above
   tests/
     test_calculations.py           Pure-function unit tests + graduation example
     test_validation.py             Input validation tests
@@ -990,6 +1030,12 @@ backend/
                                     incl. OAuth2 access-token refresh/caching/re-refresh (injectable clock,
                                     no real timing dependency) and per-credential missing-env-var checks
     test_config.py                 v0.1.2: MARKET_DATA_PROVIDER + credential env-var reading
+    test_cross_validate_providers.py  v0.1.10: unit tests for pct_diff's divide-by-zero handling --
+                                    the script's real I/O is deliberately untested, same as the other
+                                    manual-check scripts
+    test_market_data_api.py        v0.1.9: mocked-provider tests for every exception->HTTP-status branch,
+                                    plus a second class proving the same mapping against the real registry
+                                    (no mocking) -- e.g. CSVProvider genuinely returns 501, unmocked
     fixtures/sample_thinkorswim_chain.csv  v0.1.1: example chain export
   requirements.txt
   pytest.ini
@@ -998,11 +1044,12 @@ frontend/
   src/
     types/                         TS types mirroring backend schemas
       csvImport.ts                 v0.1.1: NormalizedOption / CsvImportResponse types
+      marketData.ts                v0.1.9: Quote / MarketTimestamp types (mirrors market_data.py)
     calculations/                  TS mirror of the backend formulas
     utils/
       optionToFormState.ts         v0.1.1: NormalizedOption pair -> BearPutSpreadFormState (shared)
       spreadCombinations.ts        v0.1.1: tiny scanner -- all valid combos + filtering
-    api/client.ts                  Fetch wrapper + error formatting + importCsv()
+    api/client.ts                  Fetch wrapper + error formatting + importCsv() + getLiveQuote()
     components/                    One component per UI section
       DistributionChart.tsx        Phase 2: probability histogram + payoff line, combined
       DistributionTable.tsx        Phase 2: full bucket table
@@ -1013,6 +1060,9 @@ frontend/
       OptionChainTable.tsx         v0.1.1: chain table with call/put filter + long/short selection
       SpreadBuilderPreview.tsx     v0.1.1: instant client-side Debit/Max Loss/Profit/Breakeven/Delta
       SpreadScanner.tsx            v0.1.1: tiny scanner UI -- filters, sortable results, Analyze
+      LiveQuotePanel.tsx           v0.1.9: provider select + fetch button, shown next to a CSV chain's
+                                    underlying price -- first UI surface for Alpaca/Massive/Schwab data;
+                                    never feeds the calculator, purely a side-by-side reference
     pages/CalculatorPage.tsx       Composes the page, owns form state
     App.tsx, main.tsx, index.css
 scripts/
