@@ -5,14 +5,16 @@ right now" -- that's all the CSV path and today's calculator need, and
 it stays exactly as-is; nothing here changes it or what depends on it.
 
 MarketBar and Quote are provider-facing contracts (see providers/base.py's
-get_historical_data() / get_latest_quote()) -- MarketBar still has no
-caller (get_historical_data has no route yet), but Quote has been live
-since v0.1.9 via GET /market-data/{symbol}/quote. LiveQuote (below) is
-that route's actual HTTP response shape -- a superset of Quote assembled
-by the route itself, not a provider contract.
+get_historical_data() / get_latest_quote()) -- Quote has been live since
+v0.1.9 via GET /market-data/{symbol}/quote. MarketBar got its first real
+caller in v0.1.16 (GET /market-data/{symbol}/history, see
+app/api/historical_data.py) -- before that it existed only as the target
+shape providers' get_historical_data() already returned. LiveQuote and
+HistoricalBar (below) are those two routes' actual HTTP response shapes --
+flat supersets assembled by the route itself, never a provider contract.
 """
 
-from datetime import datetime
+from datetime import date, datetime
 
 from pydantic import BaseModel
 
@@ -32,11 +34,11 @@ class MarketTimestamp(BaseModel):
 class MarketBar(BaseModel):
     """One OHLCV bar for an underlying -- the unit get_historical_data returns.
 
-    Nothing in the app constructs one of these yet; it exists so a
-    future provider's get_historical_data() has a normalized return
-    type to target from day one, instead of each provider inventing
-    its own bar shape that the (not-yet-built) backtesting phase would
-    have to special-case per source.
+    This is the provider-facing contract every MarketDataProvider's
+    get_historical_data() returns, unchanged since it was first defined --
+    see HistoricalBar below for the different, flat shape
+    GET /market-data/{symbol}/history (v0.1.16) actually returns to the
+    frontend, same split as Quote/LiveQuote.
     """
 
     symbol: str
@@ -46,6 +48,48 @@ class MarketBar(BaseModel):
     low: float
     close: float
     volume: int
+
+
+class HistoricalBar(BaseModel):
+    """The normalized shape GET /market-data/{symbol}/history actually
+    returns to the frontend (v0.1.16) -- a flat, provider-independent
+    view of MarketBar, built by the route, not by a provider. Mirrors
+    exactly how LiveQuote flattens Quote (see below): `provider` is
+    promoted from MarketBar.timestamp.source to a top-level field, and
+    `timestamp` is flattened to a plain datetime instead of a nested
+    MarketTimestamp.
+
+    This is the "provider-independent historical bar model" the Quant
+    Lab engine (and any other downstream consumer) should build
+    against -- never a provider's raw JSON response shape. Deliberately
+    NOT a change to MarketBar itself, for the same reason LiveQuote
+    isn't a change to Quote: MarketBar is what every provider's
+    get_historical_data() is tested against (see
+    tests/test_alpaca_provider.py etc.); this is purely an HTTP
+    response shape, assembled in app/api/historical_data.py.
+    """
+
+    symbol: str
+    timestamp: datetime
+    open: float
+    high: float
+    low: float
+    close: float
+    volume: int
+    provider: str
+
+    @classmethod
+    def from_market_bar(cls, bar: MarketBar) -> "HistoricalBar":
+        return cls(
+            symbol=bar.symbol,
+            timestamp=bar.timestamp.value,
+            open=bar.open,
+            high=bar.high,
+            low=bar.low,
+            close=bar.close,
+            volume=bar.volume,
+            provider=bar.timestamp.source,
+        )
 
 
 class Quote(BaseModel):
@@ -119,3 +163,20 @@ class LiveQuote(BaseModel):
     volume: int | None = None
     timestamp: datetime
     provider: str
+
+
+class HistoricalBarsResponse(BaseModel):
+    """The full response body GET /market-data/{symbol}/history returns
+    (v0.1.16) -- the bars themselves (HistoricalBar, above) plus enough
+    of the echoed request to make the response self-describing (what was
+    asked for, not just what came back) and a `bar_count` so the
+    frontend doesn't need `bars.length` to know how many rows it got.
+    """
+
+    symbol: str
+    provider: str
+    timeframe: str
+    start: date
+    end: date
+    bar_count: int
+    bars: list[HistoricalBar]

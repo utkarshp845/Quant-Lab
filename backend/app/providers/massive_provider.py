@@ -42,6 +42,11 @@ real-time quotes need a paid plan. _get() turns that into a clear
 RuntimeError naming which capability needs upgrading, rather than
 letting a bare httpx.HTTPStatusError surface.
 
+get_historical_data() paginates automatically as of v0.1.16 (see its
+docstring): a response can include a `next_url` when more bars exist
+beyond one request's `limit` -- exactly what an intraday timeframe over
+a real date range needs.
+
 Auth: "Authorization: Bearer <MASSIVE_API_KEY>" (confirmed via the
 official client-python repo's request trace, not the docs prose, which
 didn't state it explicitly -- see this provider's design-discussion
@@ -73,6 +78,13 @@ from app.models.market_data import MarketBar, MarketTimestamp, Quote
 from app.providers.base import MarketDataProvider, NormalizedChainResult
 
 DATA_BASE_URL = "https://api.massive.com"
+
+# Safety cap on how many pages get_historical_data() will follow via
+# next_url before giving up -- see alpaca_provider.py's _MAX_PAGES for
+# the identical reasoning (an intraday timeframe over a wide date range
+# can span many pages; this bounds a misbehaving/looping upstream to a
+# bounded number of requests).
+_MAX_PAGES = 50
 
 
 def _as_date_param(value: str | date | datetime) -> str:
@@ -124,36 +136,64 @@ class MassiveProvider(MarketDataProvider):
     ) -> list[MarketBar]:
         """multiplier/timespan use Massive's own vocabulary (e.g.
         multiplier=1, timespan="day" for daily bars) rather than
-        translating to Alpaca's "1Day"-style strings -- there is
-        exactly one caller of this method today (the manual check
-        script), so there's nothing yet that needs a shared vocabulary
-        across providers to be worth inventing."""
-        data = self._get(
+        translating to Alpaca's "1Day"-style strings -- callers that need
+        a shared vocabulary across providers (e.g. the historical-data
+        route, app/api/historical_data.py) translate at that layer
+        instead of this provider inventing one nobody else used to need.
+
+        Paginates automatically (v0.1.16, same reasoning as
+        alpaca_provider.py's get_historical_data): a response can include
+        a `next_url` when more results exist beyond `limit` for one
+        request -- an intraday timeframe over a real date range can span
+        several such pages. Follows `next_url` as-is (it already carries
+        the cursor and original query params) until it's absent, or
+        `_MAX_PAGES` is hit."""
+        path = (
             f"/v2/aggs/ticker/{symbol}/range/{multiplier}/{timespan}/"
-            f"{_as_date_param(start)}/{_as_date_param(end)}",
-            {"adjusted": "true", "sort": "asc", "limit": limit},
+            f"{_as_date_param(start)}/{_as_date_param(end)}"
         )
-        results = data.get("results") or []
-        return [
-            MarketBar(
-                symbol=symbol,
-                timestamp=MarketTimestamp(value=_from_unix_ms(bar["t"]), source=self.name),
-                open=bar["o"],
-                high=bar["h"],
-                low=bar["l"],
-                close=bar["c"],
-                # Confirmed against a real account: Massive's "v" can come
-                # back as a float with a fractional part (e.g.
-                # 27820813.411849), not the clean integer Alpaca returns.
-                # MarketBar.volume is (correctly) an int -- a share count
-                # is conceptually whole -- so this provider rounds rather
-                # than relaxing the shared model's type for one source's
-                # quirk. round() over int() specifically: truncating would
-                # systematically undercount every bar by up to ~1 share.
-                volume=round(bar["v"]),
+        params = {"adjusted": "true", "sort": "asc", "limit": limit}
+        bars: list[MarketBar] = []
+        next_url: str | None = None
+        for _ in range(_MAX_PAGES):
+            # next_url is a fully-qualified URL (cursor + original query
+            # params already baked in by Massive) -- pass it through with
+            # params=None, not params={}. httpx.Client.get(url, params=X)
+            # REPLACES url's existing query string with X whenever X is
+            # not None -- even {} -- so passing {} here would silently
+            # strip next_url's own ?cursor=... and re-request page 1
+            # forever. Confirmed the hard way: see
+            # tests/test_massive_provider.py::TestGetHistoricalDataPagination.
+            data = self._get(next_url or path, None if next_url else params)
+            results = data.get("results") or []
+            bars.extend(
+                MarketBar(
+                    symbol=symbol,
+                    timestamp=MarketTimestamp(value=_from_unix_ms(bar["t"]), source=self.name),
+                    open=bar["o"],
+                    high=bar["h"],
+                    low=bar["l"],
+                    close=bar["c"],
+                    # Confirmed against a real account: Massive's "v" can come
+                    # back as a float with a fractional part (e.g.
+                    # 27820813.411849), not the clean integer Alpaca returns.
+                    # MarketBar.volume is (correctly) an int -- a share count
+                    # is conceptually whole -- so this provider rounds rather
+                    # than relaxing the shared model's type for one source's
+                    # quirk. round() over int() specifically: truncating would
+                    # systematically undercount every bar by up to ~1 share.
+                    volume=round(bar["v"]),
+                )
+                for bar in results
             )
-            for bar in results
-        ]
+            next_url = data.get("next_url")
+            if not next_url:
+                return bars
+        raise RuntimeError(
+            f"MassiveProvider: get_historical_data({symbol!r}) did not finish paginating after "
+            f"{_MAX_PAGES} pages -- aborting rather than looping indefinitely. Narrow the date "
+            "range or timeframe, or raise _MAX_PAGES if this range is genuinely expected to be this large."
+        )
 
     def get_latest_quote(self, *, symbol: str) -> Quote:
         quote = self._get(f"/v2/last/nbbo/{symbol}", {})["results"]
@@ -173,7 +213,10 @@ class MassiveProvider(MarketDataProvider):
                 "(or an explicit constructor argument)."
             )
 
-    def _get(self, path: str, params: dict) -> dict:
+    def _get(self, path: str, params: dict | None) -> dict:
+        """`params=None` (as opposed to `{}`) means "don't touch this
+        URL's existing query string" -- see get_historical_data's
+        next_url handling for why that distinction matters here."""
         self._require_credentials()
         response = self._client.get(
             path,

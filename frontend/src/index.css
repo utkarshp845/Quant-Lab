@@ -559,6 +559,222 @@ body {
   font-style: italic;
 }
 
+/* ---------- Historical market data test (v0.1.16) ---------- */
+
+.historical-data-test {
+  margin-bottom: 24px;
+  padding: 14px 16px;
+  background: var(--color-surface);
+  border: 1px dashed var(--color-border);
+  border-radius: 10px;
+}
+
+.historical-data-test-label {
+  margin: 0 0 10px;
+  font-size: 0.8rem;
+  color: var(--color-text-muted);
+}
+
+.historical-data-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: 12px;
+}
+
+.historical-data-controls label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 0.76rem;
+  font-weight: 600;
+  color: var(--color-text-muted);
+}
+
+.historical-data-controls select,
+.historical-data-controls input[type="date"] {
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  padding: 5px 8px;
+  font-size: 0.85rem;
+  color: var(--color-text);
+  background: var(--color-surface);
+}
+
+.historical-data-controls button {
+  background: var(--color-accent);
+  color: white;
+  border: none;
+  border-radius: 8px;
+  padding: 7px 14px;
+  font-size: 0.85rem;
+  font-weight: 600;
+  cursor: pointer;
+  height: fit-content;
+}
+
+.historical-data-controls button:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.historical-data-result {
+  margin-top: 12px;
+}
+
+.historical-data-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  font-size: 0.85rem;
+  margin-bottom: 10px;
+}
+
+.historical-data-summary code {
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+}
+
+.historical-data-empty {
+  font-size: 0.85rem;
+  color: var(--color-text-muted);
+}
+
+.historical-bar-table-wrap {
+  margin-bottom: 14px;
+  overflow-x: auto;
+}
+
+.historical-bar-table-title {
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--color-text-muted);
+  margin-bottom: 6px;
+}
+
+.historical-bar-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.82rem;
+}
+
+.historical-bar-table th,
+.historical-bar-table td {
+  text-align: right;
+  padding: 5px 8px;
+  border-bottom: 1px solid var(--color-border);
+  white-space: nowrap;
+}
+
+.historical-bar-table th:first-child,
+.historical-bar-table td:first-child {
+  text-align: left;
+}
+
+.historical-bar-table th {
+  color: var(--color-text-muted);
+  font-weight: 600;
+  font-size: 0.74rem;
+}
+
+.historical-compare-section {
+  margin-top: 16px;
+  padding-top: 14px;
+  border-top: 1px dashed var(--color-border);
+}
+
+.historical-compare-label {
+  margin: 0 0 10px;
+  font-size: 0.8rem;
+  color: var(--color-text-muted);
+}
+
+.historical-compare-controls {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.historical-compare-controls input[type="file"] {
+  font-size: 0.82rem;
+}
+
+.historical-compare-controls button {
+  background: var(--color-accent);
+  color: white;
+  border: none;
+  border-radius: 8px;
+  padding: 7px 14px;
+  font-size: 0.85rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.historical-compare-controls button:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.historical-comparison-report {
+  margin-top: 12px;
+}
+
+.historical-comparison-summary {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  column-gap: 12px;
+  row-gap: 4px;
+  margin: 0 0 12px;
+  font-size: 0.84rem;
+}
+
+.historical-comparison-summary dt {
+  color: var(--color-text-muted);
+}
+
+.historical-comparison-summary dd {
+  margin: 0;
+  font-weight: 600;
+  text-align: right;
+}
+
+.historical-comparison-row-errors {
+  margin-bottom: 12px;
+  font-size: 0.82rem;
+}
+
+.historical-comparison-row-errors ul {
+  margin: 4px 0 0;
+  padding-left: 18px;
+  color: var(--color-loss);
+}
+
+.historical-comparison-notes {
+  margin: 0 0 12px;
+  padding-left: 18px;
+  font-size: 0.78rem;
+  color: var(--color-text-muted);
+  font-style: italic;
+}
+
+.historical-comparison-truncated {
+  font-size: 0.78rem;
+  color: var(--color-text-muted);
+  margin: 0 0 8px;
+}
+
+.historical-comparison-table th,
+.historical-comparison-table td {
+  font-variant-numeric: tabular-nums;
+}
+
+.historical-diff-na {
+  color: var(--color-text-muted);
+}
+
 /* ---------- Spread Builder preview card ---------- */
 
 .spread-builder-card {

@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { analyzeBearPutSpread, ApiError } from "../api/client";
 import { AssumptionsFooter } from "../components/AssumptionsFooter";
 import { DeltaSection } from "../components/DeltaSection";
+import { HistoricalDataPanel } from "../components/HistoricalDataPanel";
 import { InputsPanel, type InputMode } from "../components/InputsPanel";
 import { LiveQuotePanel } from "../components/LiveQuotePanel";
 import { LiveStreamPanel } from "../components/LiveStreamPanel";
@@ -136,6 +137,15 @@ export function CalculatorPage() {
         </p>
         <LiveQuotePanel symbol="TSLA" />
         <LiveStreamPanel symbol="TSLA" />
+      </section>
+
+      <section className="historical-data-test">
+        <p className="historical-data-test-label">
+          Historical market data test (v0.1.16) — proves Provider → Backend → Normalized Data
+          (HistoricalBar) → this UI for OHLCV bars, and lets a CSV export be diffed against a live
+          provider for the same symbol/timeframe/period. Independent of the calculator below.
+        </p>
+        <HistoricalDataPanel />
       </section>
 
       <InputsPanel

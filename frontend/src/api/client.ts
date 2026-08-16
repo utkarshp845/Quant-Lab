@@ -1,6 +1,13 @@
 import type { BearPutSpreadRequest, BearPutSpreadResponse } from "../types/bearPutSpread";
 import type { CsvImportResponse } from "../types/csvImport";
-import type { LiveQuote, LiveQuoteProvider } from "../types/marketData";
+import type {
+  HistoricalBarsResponse,
+  HistoricalComparisonResponse,
+  HistoricalDataProvider,
+  LiveQuote,
+  LiveQuoteProvider,
+  Timeframe,
+} from "../types/marketData";
 import type { MonteCarloRequest, MonteCarloResult } from "../types/monteCarlo";
 
 // Exported so anything that needs the backend's origin without going
@@ -101,6 +108,64 @@ export function analyzeBearPutSpread(request: BearPutSpreadRequest): Promise<Bea
 
 export function runMonteCarloSimulation(request: MonteCarloRequest): Promise<MonteCarloResult> {
   return postJson<MonteCarloResult>("/bear-put-spread/monte-carlo", request);
+}
+
+/**
+ * Fetches historical OHLCV bars from GET /api/market-data/{symbol}/history
+ * (see backend/app/api/historical_data.py, v0.1.16). Independent of the
+ * live-quote and CSV-import paths above -- the response is
+ * HistoricalBarsResponse, a normalized, provider-independent shape the
+ * backend assembles from whichever provider was asked; no API
+ * credentials are ever part of this request or response.
+ */
+export function getHistoricalBars(params: {
+  symbol: string;
+  start: string; // YYYY-MM-DD
+  end: string;
+  timeframe: Timeframe;
+  provider: HistoricalDataProvider;
+}): Promise<HistoricalBarsResponse> {
+  const qs = new URLSearchParams({
+    start: params.start,
+    end: params.end,
+    timeframe: params.timeframe,
+    provider: params.provider,
+  });
+  return getJson<HistoricalBarsResponse>(`/market-data/${encodeURIComponent(params.symbol)}/history?${qs}`);
+}
+
+/**
+ * Uploads a CSV of OHLCV bars and diffs it against the same provider
+ * request GET .../history makes, via POST /api/market-data/history/compare
+ * (see backend/app/api/historical_comparison.py, v0.1.16). This is the
+ * "most important test" for the historical-data feature -- see that
+ * route's docstring for what the response deliberately does and doesn't
+ * assert (numbers only, never a pass/fail verdict).
+ */
+export async function compareHistoricalCsv(
+  file: File,
+  params: { symbol: string; start: string; end: string; timeframe: Timeframe; provider: HistoricalDataProvider },
+): Promise<HistoricalComparisonResponse> {
+  const formData = new FormData();
+  formData.append("file", file);
+  formData.append("symbol", params.symbol);
+  formData.append("start", params.start);
+  formData.append("end", params.end);
+  formData.append("timeframe", params.timeframe);
+  formData.append("provider", params.provider);
+
+  const res = await fetch(`${API_BASE}/market-data/history/compare`, {
+    method: "POST",
+    body: formData,
+  });
+
+  if (!res.ok) {
+    const errorBody = await res.json().catch(() => null);
+    const details = formatValidationErrors(errorBody);
+    throw new ApiError(details[0] ?? "Could not compare this CSV against the provider.", details);
+  }
+
+  return res.json();
 }
 
 export async function importCsv(file: File): Promise<CsvImportResponse> {

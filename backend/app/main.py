@@ -14,6 +14,8 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.bear_put_spread import router as bear_put_spread_router
 from app.api.csv_import import router as csv_import_router
+from app.api.historical_comparison import router as historical_comparison_router
+from app.api.historical_data import router as historical_data_router
 from app.api.market_data import router as market_data_router
 from app.api.market_data_stream import router as market_data_stream_router
 
@@ -44,6 +46,8 @@ app.include_router(bear_put_spread_router, prefix="/api")
 app.include_router(csv_import_router, prefix="/api")
 app.include_router(market_data_router, prefix="/api")
 app.include_router(market_data_stream_router, prefix="/api")
+app.include_router(historical_data_router, prefix="/api")
+app.include_router(historical_comparison_router, prefix="/api")
 
 
 @app.get("/api/health")
