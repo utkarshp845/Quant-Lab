@@ -1093,7 +1093,31 @@ assuming the code is wrong (`lsof -nP -iTCP:443 | grep <provider's IP>`
 against the PID actually listening on your backend's port will tell
 you if a *different* process has the streaming socket open).
 `scripts/dev.sh stop` is the reliable way to avoid this in the first
-place -- it tracks the PID it started and stops exactly that one.
+place -- it tracks the PID it started and stops exactly that one (and,
+as of the fix below, everything under it too).
+
+This exact failure mode happened in a real session and is where the
+above got found: `scripts/dev.sh stop` was, at the time, only killing
+the `uvicorn --reload` PID it tracked -- not the separate `multiprocessing`
+worker process reload mode spawns to actually run the app (confirmed
+via `ps`: that worker's command line is the generic
+`multiprocessing.spawn_main`, not anything grep-able like
+`app.main:app`, so it can only be found by PID relationship, not by
+pattern). `stop` reported success while that worker kept running,
+still holding a live Alpaca connection, and the *next* `start` then
+failed to reconnect with the same "connection limit exceeded" retry
+loop -- indistinguishable from a real bug without checking `lsof`.
+Fixed: `stop_one` now walks and kills the tracked PID's full descendant
+tree, not just the one PID (`scripts/dev.sh`'s `descendants_of()`).
+Separately, but found in the same session: `MASSIVE_API_KEY` sat in
+`backend/.env` the whole time but the running backend still reported
+it missing, because `app/config.py` deliberately never auto-loads
+`.env` (see its docstring) and this particular shell session had only
+ever exported the Alpaca vars, not the Massive one -- `scripts/dev.sh
+start` now sources `backend/.env` into the backend's environment
+itself if the file exists, so a value sitting in that file reliably
+reaches the process without depending on which vars happened to
+already be exported in whichever shell ran `dev.sh start`.
 
 **Massive's real-time WebSocket needs a paid plan -- confirmed live,
 not assumed, and surfaced honestly rather than half-built and left
@@ -1337,7 +1361,11 @@ frontend/
                                     v0.1.12 added LiveStreamPanel directly below it
     App.tsx, main.tsx, index.css
 scripts/
-  dev.sh                          v0.1.5: start/stop/restart/status for backend + frontend together
+  dev.sh                          v0.1.5: start/stop/restart/status for backend + frontend together.
+                                   v0.1.13: sources backend/.env into the backend's environment if present,
+                                   and stop kills the tracked PID's full descendant tree (not just that one
+                                   PID) -- see README section 14's operational-gotcha callout for the real
+                                   session that found both gaps
 ```
 
 ## Known limitations
