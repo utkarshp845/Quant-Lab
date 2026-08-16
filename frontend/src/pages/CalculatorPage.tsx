@@ -4,6 +4,7 @@ import { AssumptionsFooter } from "../components/AssumptionsFooter";
 import { DeltaSection } from "../components/DeltaSection";
 import { InputsPanel, type InputMode } from "../components/InputsPanel";
 import { LiveQuotePanel } from "../components/LiveQuotePanel";
+import { LiveStreamPanel } from "../components/LiveStreamPanel";
 import { MonteCarloSection } from "../components/MonteCarloSection";
 import { PayoffCalculator } from "../components/PayoffCalculator";
 import { PayoffChart } from "../components/PayoffChart";
@@ -134,6 +135,7 @@ export function CalculatorPage() {
           of the calculator below; picking a provider or fetching a quote never changes any input.
         </p>
         <LiveQuotePanel symbol="TSLA" />
+        <LiveStreamPanel symbol="TSLA" />
       </section>
 
       <InputsPanel

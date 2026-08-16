@@ -3,7 +3,11 @@ import type { CsvImportResponse } from "../types/csvImport";
 import type { LiveQuote, LiveQuoteProvider } from "../types/marketData";
 import type { MonteCarloRequest, MonteCarloResult } from "../types/monteCarlo";
 
-const API_BASE = "http://localhost:8000/api";
+// Exported so anything that needs the backend's origin without going
+// through one of this file's request helpers -- currently just the
+// WebSocket stream hook (see hooks/useAlpacaQuoteStream.ts), which
+// derives its ws:// URL from this instead of hardcoding it a second time.
+export const API_BASE = "http://localhost:8000/api";
 
 export class ApiError extends Error {
   details: string[];

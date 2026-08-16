@@ -481,6 +481,71 @@ body {
   text-transform: capitalize;
 }
 
+/* ---------- Live stream panel (Alpaca WebSocket, v0.1.12) ---------- */
+
+.live-stream-panel {
+  margin-top: 14px;
+  padding-top: 14px;
+  border-top: 1px dashed var(--color-border);
+}
+
+.live-stream-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.live-stream-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.8rem;
+  font-weight: 600;
+}
+
+.live-stream-status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.live-stream-status-connecting {
+  color: var(--color-sell);
+}
+
+.live-stream-status-connected {
+  color: var(--color-profit);
+}
+
+.live-stream-status-disconnected {
+  color: var(--color-text-muted);
+}
+
+.live-stream-status-error {
+  color: var(--color-loss);
+}
+
+.live-stream-detail {
+  font-size: 0.78rem;
+  color: var(--color-text-muted);
+  margin-top: 4px;
+}
+
+.live-stream-waiting {
+  margin-top: 8px;
+  font-size: 0.84rem;
+  color: var(--color-text-muted);
+}
+
+.live-stream-caveat {
+  margin-top: 8px;
+  font-size: 0.74rem;
+  color: var(--color-text-muted);
+  font-style: italic;
+}
+
 /* ---------- Spread Builder preview card ---------- */
 
 .spread-builder-card {

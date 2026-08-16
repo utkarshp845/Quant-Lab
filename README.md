@@ -970,6 +970,120 @@ NVDA, an implausibly wide TSLA spread) — worth remembering before
 trusting `get_latest_quote()` for anything time-sensitive on a free
 plan, independent of which provider serves it.
 
+## 14. Real-time streaming market data (Alpaca, v0.1.12)
+
+**Why this is a different mechanism from section 13's quote lookup.**
+`GET /market-data/{symbol}/quote` is request/response: the frontend
+asks, the backend answers once. This feature is push: TSLA's price on
+`CalculatorPage` updates on its own, with no button and no polling
+loop, for as long as the page is open. That needed a genuinely
+different transport, not just a new route -- see below.
+
+**Transport: a plain FastAPI/Starlette WebSocket, not a new
+dependency.** The app already had a request/response HTTP client
+(`fetch`) as its only frontend-backend mechanism; nothing resembling
+push existed yet. `uvicorn[standard]` already brings in the ASGI
+server's WebSocket support for free, so `GET (WebSocket)
+/api/market-data/stream` (`backend/app/api/market_data_stream.py`)
+needed no new server-side dependency. The one new dependency is
+`websockets` (added to `requirements.txt`), used as an *outbound*
+client -- the backend's own connection out to Alpaca's streaming API,
+which is a different direction from the inbound server support FastAPI
+already had.
+
+**Scope, deliberately narrow:** Alpaca only (no Massive streaming
+yet), and in practice only ever asked for TSLA (the frontend hardcodes
+`symbol=TSLA`; the route itself doesn't hardcode it, so adding a symbol
+picker later needs no backend change). No options data, no scanner
+changes, no calculation changes, no trade execution -- this phase is
+"the underlying's price updates itself," nothing more.
+
+**Data flow, end to end:**
+
+```
+Alpaca's streaming API (wss://stream.data.alpaca.markets/v2/iex)
+        │  auth (ALPACA_API_KEY_ID/SECRET, backend-only, never sent to the frontend)
+        │  subscribe to TSLA trades + quotes
+        ▼
+AlpacaQuoteStream                    (app/streaming/alpaca_stream.py)
+        │  normalizes "q"/"t" messages into the existing LiveQuote model
+        ▼
+AlpacaStreamHub                      (app/streaming/hub.py)
+        │  one upstream connection per symbol, fanned out to every
+        │  connected browser tab (Alpaca allows only one connection
+        │  per API key -- see hub.py's module docstring)
+        ▼
+WebSocket route                      (app/api/market_data_stream.py)
+        │  relays {"type": "status", ...} / {"type": "quote", ...} frames
+        ▼
+useAlpacaQuoteStream                 (frontend/src/hooks/useAlpacaQuoteStream.ts)
+        │  owns the browser<->backend socket + its own reconnect/backoff
+        ▼
+LiveStreamPanel                      (frontend/src/components/LiveStreamPanel.tsx)
+                                      renders status + auto-updating quote + "last update" time
+```
+
+**Two independent reconnection layers, on purpose, because there are
+two independent things that can fail:** the backend's connection to
+Alpaca (handled inside `AlpacaQuoteStream.run()`, exponential backoff
+1s→30s), and the browser's connection to *this app's own* backend
+(handled inside `useAlpacaQuoteStream`, same backoff shape,
+independently). A browser tab waking from sleep doesn't mean Alpaca
+dropped; the backend restarting doesn't mean the browser's network is
+bad. Conflating them into one retry loop would make each failure
+harder to reason about, not easier.
+
+**A real bug this surfaced, found by testing against a real account,
+not assumed:** restarting the backend process doesn't send Alpaca a
+clean WebSocket close, so Alpaca can keep treating the *previous*
+connection as live for a short window and reject the new one with
+`{"T": "error", "code": 406, "msg": "connection limit exceeded"}` --
+even though the credentials are completely valid. The first version of
+`_authenticate()` treated *any* auth-stage error as "these credentials
+are wrong" and gave up permanently (a fatal `"error"` status the UI
+never recovers from without a full page reload). Fixed by checking
+Alpaca's specific error `code`: only `402` (auth actually failed) is
+now treated as fatal; `406` (connection limit), `404` (login timeout),
+and `407` (slow client) are retried with the same backoff as any other
+disconnect -- see `AlpacaStreamTransientError` in `alpaca_stream.py`
+and `tests/test_alpaca_stream.py::TestAuthErrorCodeClassification` for
+the worked example, live-verified: killing and restarting the backend
+against a real Alpaca account reproduced the 406 immediately, and the
+fixed code showed "Disconnected -- retrying" and kept retrying with
+growing backoff, never landing on a stuck "Error", exactly as
+`AlpacaCredentialsMissing`/an actually-wrong key still correctly does.
+
+**Volume is honestly a different number here than section 13's.**
+`LiveQuote.volume` from the REST route is a best-effort *session*
+total (a historical-bar lookup). Alpaca's real-time trade messages
+carry only each individual trade's own size, not a running daily
+total, so the streamed `LiveQuote.volume` is the sum of trade sizes
+seen *since this WebSocket connection started* -- much smaller than
+the session total right after connecting, by design, not a bug. Both
+routes reuse the same `LiveQuote` field name because the *shape* the
+frontend consumes is identical; the two numbers are not meant to be
+compared directly, and `LiveStreamPanel` says so under the quote card.
+
+**How to test it locally:**
+1. Set `ALPACA_API_KEY_ID` / `ALPACA_API_SECRET_KEY` (same two vars
+   section 13 uses -- see `backend/.env.example`) and start the backend
+   and frontend (sections 4-5, or `scripts/dev.sh start`).
+2. Open the app and look at the "Live stream (Alpaca)" panel, directly
+   below the existing manual "Live quote" panel on `CalculatorPage`.
+3. It should show "Connecting…" then "Connected" within a couple of
+   seconds (this alone proves the backend reached and authenticated
+   with Alpaca -- no frontend code path can fake that status).
+4. During regular US market hours, TSLA's price/bid/ask/volume and the
+   "Last update" timestamp should change on their own, with no
+   interaction. Outside market hours, "Connected" but "Waiting for the
+   first tick…" is the correct, honest state -- Alpaca's feed has
+   nothing to send when no trades are happening, not a broken
+   connection.
+5. To see reconnection: stop the backend (`scripts/dev.sh stop` or
+   `Ctrl-C`) while the page is open -- the panel turns "Disconnected"
+   with a growing "retrying in Ns" countdown; start the backend again
+   and it reconnects on its own, no page reload needed.
+
 ---
 
 ## Project structure
@@ -1009,6 +1123,14 @@ backend/
                                     quotes, Schwab Trader API, OAuth2 access-token refresh); get_chain
                                     (options) still a stub -- see docstring for confirmed-vs-guessed fields
       registry.py                  Provider-name -> class map + MARKET_DATA_PROVIDER-driven default
+    streaming/                     v0.1.12: backend-only real-time streaming (Alpaca, see README section 14)
+      alpaca_stream.py             One upstream WS connection to Alpaca's streaming API for one symbol --
+                                    auth, subscribe, "q"/"t" message normalization into LiveQuote,
+                                    reconnect/backoff; distinguishes fatal (bad credentials, code 402)
+                                    from retryable (connection-limit/timeout, codes 404/406/407) auth failures
+      hub.py                       One upstream connection per symbol shared by every connected browser
+                                    tab (Alpaca allows only one connection per API key) + state replay
+                                    for a client that joins after the stream is already up
     api/
       bear_put_spread.py           Route handlers, calls calculations in sequence
       csv_import.py                Upload -> CSVProvider.get_chain() -> return chain (no analysis math)
@@ -1019,6 +1141,9 @@ backend/
                                     second, best-effort get_historical_data() call for volume (a trailing
                                     window, not strictly "today" -- empty on a weekend) and returns the
                                     combined LiveQuote shape; volume-enrichment failures never fail the quote
+      market_data_stream.py        v0.1.12: GET (WebSocket) /market-data/stream -- this app's first
+                                    server-push route; relays app/streaming/hub.py's status + LiveQuote
+                                    frames to one browser tab, Alpaca-only for now (see README section 14)
   scripts/
     alpaca_manual_check.py         v0.1.4: opt-in, NOT run by pytest -- hits the real Alpaca API with
                                     your own credentials to sanity-check TSLA/NVDA bars + quotes
@@ -1054,6 +1179,15 @@ backend/
                                     (no mocking) -- e.g. CSVProvider genuinely returns 501, unmocked.
                                     v0.1.11 added a class proving volume enrichment is always best-effort
                                     (null on any failure, never fails the quote itself)
+    test_alpaca_stream.py          v0.1.12: message normalization (bid/ask/price/volume merge, timestamp
+                                    parsing), and the fatal-vs-retryable auth error-code classification
+                                    that a real-account test run caught -- see README section 14
+    test_alpaca_stream_hub.py      v0.1.12: fan-out/lifecycle tests with a fake stream factory -- one
+                                    upstream connection per symbol regardless of subscriber count, state
+                                    replay for late joiners, teardown once the last client unsubscribes
+    test_market_data_stream_api.py v0.1.12: WebSocket route tests (TestClient.websocket_connect) with the
+                                    hub swapped for a fake -- status/quote frame relay, default symbol,
+                                    unsupported-provider rejection
     fixtures/sample_thinkorswim_chain.csv  v0.1.1: example chain export
   requirements.txt
   pytest.ini
@@ -1063,12 +1197,19 @@ frontend/
     types/                         TS types mirroring backend schemas
       csvImport.ts                 v0.1.1: NormalizedOption / CsvImportResponse types
       marketData.ts                v0.1.11: LiveQuote type (mirrors backend's LiveQuote -- the flat
-                                    response shape, not the provider-facing Quote model)
+                                    response shape, not the provider-facing Quote model). v0.1.12 added
+                                    StreamMessage (status/quote WebSocket frame union)
     calculations/                  TS mirror of the backend formulas
     utils/
       optionToFormState.ts         v0.1.1: NormalizedOption pair -> BearPutSpreadFormState (shared)
       spreadCombinations.ts        v0.1.1: tiny scanner -- all valid combos + filtering
-    api/client.ts                  Fetch wrapper + error formatting + importCsv() + getLiveQuote()
+    api/client.ts                  Fetch wrapper + error formatting + importCsv() + getLiveQuote();
+                                    exports API_BASE so the streaming hook derives its ws:// URL from
+                                    the same origin instead of hardcoding it a second time
+    hooks/
+      useAlpacaQuoteStream.ts      v0.1.12: owns the browser<->backend WebSocket -- status/quote state,
+                                    its own reconnect/backoff, independent of the backend's reconnect
+                                    to Alpaca (see README section 14 for why there are two of these)
     components/                    One component per UI section
       DistributionChart.tsx        Phase 2: probability histogram + payoff line, combined
       DistributionTable.tsx        Phase 2: full bucket table
@@ -1084,8 +1225,13 @@ frontend/
                                     side-by-side reference. Used two ways as of v0.1.11: embedded next to
                                     a CSV chain's underlying price (staleness check), and standalone with
                                     symbol="TSLA" on CalculatorPage (minimal, always-visible pipeline proof)
+      LiveStreamPanel.tsx          v0.1.12: no button -- renders useAlpacaQuoteStream's status (Connecting/
+                                    Connected/Disconnected/Error) + auto-updating TSLA quote + "last update"
+                                    time. Separate from LiveQuotePanel on purpose (push vs. click-to-fetch);
+                                    both sit side by side on CalculatorPage
     pages/CalculatorPage.tsx       Composes the page, owns form state; v0.1.11 added the standalone
-                                    TSLA LiveQuotePanel instance, always visible above the calculator
+                                    TSLA LiveQuotePanel instance, always visible above the calculator.
+                                    v0.1.12 added LiveStreamPanel directly below it
     App.tsx, main.tsx, index.css
 scripts/
   dev.sh                          v0.1.5: start/stop/restart/status for backend + frontend together

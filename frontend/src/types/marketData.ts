@@ -14,3 +14,23 @@ export interface LiveQuote {
 }
 
 export type LiveQuoteProvider = "alpaca" | "massive" | "schwab";
+
+// Mirrors the JSON frames GET (WebSocket) /market-data/stream sends --
+// see backend/app/api/market_data_stream.py's docstring for the exact
+// protocol (v0.1.12). Server push only; the frontend never sends
+// anything back over this socket.
+
+export type StreamConnectionStatus = "connecting" | "connected" | "disconnected" | "error";
+
+export interface StreamStatusMessage {
+  type: "status";
+  status: StreamConnectionStatus;
+  detail: string | null;
+}
+
+export interface StreamQuoteMessage {
+  type: "quote";
+  quote: LiveQuote;
+}
+
+export type StreamMessage = StreamStatusMessage | StreamQuoteMessage;
