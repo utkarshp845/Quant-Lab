@@ -5,8 +5,8 @@ import type { MonteCarloRequest, MonteCarloResult } from "../types/monteCarlo";
 
 // Exported so anything that needs the backend's origin without going
 // through one of this file's request helpers -- currently just the
-// WebSocket stream hook (see hooks/useAlpacaQuoteStream.ts), which
-// derives its ws:// URL from this instead of hardcoding it a second time.
+// WebSocket stream hook (see hooks/useQuoteStream.ts), which derives
+// its ws:// URL from this instead of hardcoding it a second time.
 export const API_BASE = "http://localhost:8000/api";
 
 export class ApiError extends Error {

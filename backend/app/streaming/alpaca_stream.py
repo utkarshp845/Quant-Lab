@@ -9,6 +9,11 @@ any HTTP/WebSocket response), subscribes to trade + quote updates for
 one symbol, and normalizes each incoming message into the existing
 LiveQuote model (app/models/market_data.py) via an async callback.
 
+The reconnect/backoff loop itself lives in ReconnectingQuoteStream
+(app/streaming/base.py), shared with MassiveQuoteStream (v0.1.13) --
+this class only implements the Alpaca-specific handshake and message
+shapes.
+
 Protocol reference (Alpaca's published streaming docs, not guessed):
     wss://stream.data.alpaca.markets/v2/{feed}
     -> client sends {"action": "auth", "key": ..., "secret": ...}
@@ -42,77 +47,51 @@ app/api/market_data.py's _best_effort_latest_volume). Both are labeled
 the same field name on purpose (same model), but a caller comparing the
 two should not expect them to agree, especially right after connecting.
 
-Reconnection: run() retries forever with exponential backoff (1s, 2s,
-4s, ... capped at 30s) on any connection drop, EXCEPT when the failure
-is not going to fix itself on retry -- no credentials configured, or
-Alpaca rejects the credentials as invalid -- which are reported as a
-fatal "error" status and stop the retry loop, so a bad API key doesn't
-spin forever.
+Fatal-vs-retryable classification (v0.1.12, confirmed against a real
+account -- see README section 14): only Alpaca error code 402 ("auth
+failed", the key/secret itself is wrong) is StreamAuthRejected (fatal).
+Every other auth-stage error -- 406 connection limit, 404 login
+timeout, 407 slow client -- is StreamTransientError (retried with
+backoff), because restarting this backend doesn't send Alpaca a clean
+WebSocket close, so Alpaca can keep treating the previous connection as
+live for a short window and reject the new one with "connection limit
+exceeded" even though the credentials are completely valid.
 """
 
 from __future__ import annotations
 
 import asyncio
 import json
-import logging
 import re
 from datetime import datetime, timedelta, timezone
-from typing import Awaitable, Callable
 
 import websockets
-from websockets.exceptions import WebSocketException
 
 from app import config
 from app.models.market_data import LiveQuote
-
-logger = logging.getLogger(__name__)
+from app.streaming.base import (
+    QuoteCallback,
+    ReconnectingQuoteStream,
+    StatusCallback,
+    StreamAuthRejected,
+    StreamCredentialsMissing,
+    StreamTransientError,
+)
 
 STREAM_URL_TEMPLATE = "wss://stream.data.alpaca.markets/v2/{feed}"
 DEFAULT_FEED = "iex"  # matches alpaca_provider.py's free-tier default
 
-_MIN_BACKOFF_SECONDS = 1
-_MAX_BACKOFF_SECONDS = 30
 _AUTH_MESSAGES_TO_READ = 5  # bounded so a malformed handshake can't hang forever
 
-StatusCallback = Callable[[str, str | None], Awaitable[None]]
-QuoteCallback = Callable[[LiveQuote], Awaitable[None]]
 
-
-class AlpacaCredentialsMissing(RuntimeError):
-    """Fatal, non-retryable: ALPACA_API_KEY_ID / ALPACA_API_SECRET_KEY
-    aren't configured. Same env vars AlpacaProvider reads -- see
-    app.config.get_provider_credential."""
-
-
-class AlpacaAuthRejected(RuntimeError):
-    """Fatal, non-retryable: Alpaca's stream itself rejected the API
-    key/secret as WRONG (Alpaca error code 402), so a bad key never
-    retries forever."""
-
-
-class AlpacaStreamTransientError(RuntimeError):
-    """Retryable: the auth handshake failed for a reason that isn't
-    "these credentials are wrong" -- confirmed against a real account
-    (see README section 13's testing convention), not assumed: killing
-    and restarting this backend process doesn't send Alpaca a clean
-    WebSocket close, so Alpaca can keep believing the old connection is
-    still open for a short window and reject the new one with
-    "connection limit exceeded" (code 406) even though the *credentials*
-    are perfectly valid and the very next attempt typically succeeds.
-    A login timeout (404) or a "slow client" disconnect (407) are the
-    same kind of "try again shortly," not "this key is bad." Only 402
-    means the credentials themselves need to change."""
-
-
-class AlpacaQuoteStream:
+class AlpacaQuoteStream(ReconnectingQuoteStream):
     """One upstream connection to Alpaca's streaming API for one symbol.
-
-    run() loops until stop() is called: connect, authenticate,
-    subscribe, read messages, normalize, invoke on_quote -- and on any
-    non-fatal disconnect, reconnect with backoff. Callers get status
-    changes via on_status("connecting" | "connected" | "disconnected" |
-    "error", detail).
+    See ReconnectingQuoteStream (app/streaming/base.py) for the
+    reconnect/backoff loop and status-callback contract this class
+    plugs into.
     """
+
+    provider_name = "alpaca"
 
     def __init__(
         self,
@@ -124,13 +103,10 @@ class AlpacaQuoteStream:
         api_secret_key: str | None = None,
         feed: str = DEFAULT_FEED,
     ):
-        self.symbol = symbol.upper()
-        self._on_quote = on_quote
-        self._on_status = on_status
+        super().__init__(symbol=symbol, on_quote=on_quote, on_status=on_status)
         self._api_key_id = api_key_id or config.get_provider_credential("alpaca", "api_key_id")
         self._api_secret_key = api_secret_key or config.get_provider_credential("alpaca", "api_secret_key")
         self._feed = feed
-        self._stopped = False
 
         # Running state, filled in from whichever message type last
         # updated -- see this module's docstring.
@@ -139,39 +115,9 @@ class AlpacaQuoteStream:
         self._price: float | None = None
         self._volume = 0
 
-    async def run(self) -> None:
-        backoff = _MIN_BACKOFF_SECONDS
-        while not self._stopped:
-            await self._on_status("connecting", None)
-            try:
-                await self._connect_once()
-                backoff = _MIN_BACKOFF_SECONDS  # reset after any clean session
-            except (AlpacaCredentialsMissing, AlpacaAuthRejected) as exc:
-                await self._on_status("error", str(exc))
-                return  # fatal -- retrying would just fail again
-            except (AlpacaStreamTransientError, WebSocketException, OSError) as exc:
-                if self._stopped:
-                    return
-                await self._on_status("disconnected", f"{exc}; retrying in {backoff}s")
-                await asyncio.sleep(backoff)
-                backoff = min(backoff * 2, _MAX_BACKOFF_SECONDS)
-            except Exception as exc:  # never let an unexpected error kill the hub's task
-                if self._stopped:
-                    return
-                logger.exception("Unexpected error in Alpaca stream for %s", self.symbol)
-                await self._on_status("disconnected", f"{exc}; retrying in {backoff}s")
-                await asyncio.sleep(backoff)
-                backoff = min(backoff * 2, _MAX_BACKOFF_SECONDS)
-
-    def stop(self) -> None:
-        """Signals run() to stop reconnecting. Does not by itself
-        interrupt a blocked recv() -- callers that need that (the hub
-        does) also cancel the asyncio.Task running run()."""
-        self._stopped = True
-
     async def _connect_once(self) -> None:
         if not self._api_key_id or not self._api_secret_key:
-            raise AlpacaCredentialsMissing(
+            raise StreamCredentialsMissing(
                 "ALPACA_API_KEY_ID and ALPACA_API_SECRET_KEY must be set for live streaming."
             )
 
@@ -201,14 +147,14 @@ class AlpacaQuoteStream:
                     code = msg.get("code")
                     detail = msg.get("msg")
                     if code == 402:  # "auth failed" -- the key/secret itself is wrong
-                        raise AlpacaAuthRejected(f"Alpaca rejected the API credentials: {detail}")
+                        raise StreamAuthRejected(f"Alpaca rejected the API credentials: {detail}")
                     # Any other auth-stage error (406 connection limit,
                     # 404 login timeout, 407 slow client, ...) is
                     # Alpaca's side of the handshake, not a bad key --
-                    # see AlpacaStreamTransientError's docstring for how
-                    # this was confirmed against a real account.
-                    raise AlpacaStreamTransientError(f"Alpaca auth handshake failed (code {code}): {detail}")
-        raise AlpacaStreamTransientError("Alpaca did not confirm authentication within the expected number of messages.")
+                    # see this module's docstring for how this was
+                    # confirmed against a real account.
+                    raise StreamTransientError(f"Alpaca auth handshake failed (code {code}): {detail}")
+        raise StreamTransientError("Alpaca did not confirm authentication within the expected number of messages.")
 
     async def _subscribe(self, ws) -> None:
         await ws.send(json.dumps({"action": "subscribe", "trades": [self.symbol], "quotes": [self.symbol]}))

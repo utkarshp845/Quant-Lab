@@ -1,9 +1,16 @@
-import { useAlpacaQuoteStream } from "../hooks/useAlpacaQuoteStream";
+import { useState } from "react";
+import { useQuoteStream } from "../hooks/useQuoteStream";
+import type { StreamProvider } from "../types/marketData";
 import { fmtUsd } from "../utils/format";
 
 interface LiveStreamPanelProps {
   symbol: string;
 }
+
+const STREAM_PROVIDERS: { value: StreamProvider; label: string }[] = [
+  { value: "alpaca", label: "Alpaca" },
+  { value: "massive", label: "Massive" },
+];
 
 const STATUS_LABEL: Record<string, string> = {
   connecting: "Connecting…",
@@ -17,27 +24,40 @@ const fmtTime = (d: Date) =>
   d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
 
 /**
- * Continuous, automatic TSLA updates pushed over the backend's
- * WebSocket relay of Alpaca's real-time market-data stream (v0.1.12) --
- * no button, no manual refresh; this panel updates for as long as it's
- * mounted. Alpaca only, for now (see useAlpacaQuoteStream and
- * backend/app/streaming for the full scope and why).
+ * Continuous, automatic updates for one symbol pushed over the
+ * backend's WebSocket relay of a provider's real-time market-data
+ * stream (Alpaca v0.1.12, Massive v0.1.13 -- see useQuoteStream) -- no
+ * button, no manual refresh; this panel updates for as long as it's
+ * mounted. The provider dropdown mirrors LiveQuotePanel's, restricted
+ * to whichever providers actually support streaming (see
+ * StreamProvider's definition) -- switching it tears down the old
+ * WebSocket and opens a new one for the newly-selected provider.
  *
- * Deliberately separate from LiveQuotePanel (the manual, multi-provider,
- * one-shot lookup used elsewhere on this page and in the CSV workflow):
- * that component's click-to-fetch request/response model doesn't fit a
- * server-push stream, and this one doesn't replace it -- both stay on
- * CalculatorPage side by side. Same "no credentials past the backend"
- * guarantee applies here: this component only ever sees the already-
- * normalized LiveQuote JSON riding on the WebSocket frames.
+ * Deliberately separate from LiveQuotePanel (the manual, multi-
+ * provider, one-shot lookup used elsewhere on this page and in the CSV
+ * workflow): that component's click-to-fetch request/response model
+ * doesn't fit a server-push stream, and this one doesn't replace it --
+ * both stay on CalculatorPage side by side. Same "no credentials past
+ * the backend" guarantee applies here: this component only ever sees
+ * the already-normalized LiveQuote JSON riding on the WebSocket frames.
  */
 export function LiveStreamPanel({ symbol }: LiveStreamPanelProps) {
-  const { status, statusDetail, quote, lastUpdated } = useAlpacaQuoteStream(symbol);
+  const [provider, setProvider] = useState<StreamProvider>("alpaca");
+  const { status, statusDetail, quote, lastUpdated } = useQuoteStream(symbol, provider);
 
   return (
     <div className="live-stream-panel">
       <div className="live-stream-header">
-        <span className="live-quote-label">Live stream (Alpaca)</span>
+        <div className="live-stream-controls">
+          <span className="live-quote-label">Live stream</span>
+          <select value={provider} onChange={(e) => setProvider(e.target.value as StreamProvider)}>
+            {STREAM_PROVIDERS.map((p) => (
+              <option key={p.value} value={p.value}>
+                {p.label}
+              </option>
+            ))}
+          </select>
+        </div>
         <span className={`live-stream-status live-stream-status-${status}`}>
           <span className="live-stream-status-dot" />
           {STATUS_LABEL[status] ?? status}

@@ -15,13 +15,8 @@ from datetime import timezone
 import pytest
 
 from app.models.market_data import LiveQuote
-from app.streaming.alpaca_stream import (
-    AlpacaAuthRejected,
-    AlpacaCredentialsMissing,
-    AlpacaQuoteStream,
-    AlpacaStreamTransientError,
-    _parse_alpaca_timestamp,
-)
+from app.streaming.alpaca_stream import AlpacaQuoteStream, _parse_alpaca_timestamp
+from app.streaming.base import StreamAuthRejected, StreamCredentialsMissing, StreamTransientError
 
 
 def _make_stream(**overrides) -> tuple[AlpacaQuoteStream, list[LiveQuote], list[tuple[str, str | None]]]:
@@ -121,7 +116,7 @@ class TestMissingCredentialsIsFatalNotRetried:
 
     def test_connect_once_raises_before_touching_the_network(self):
         stream, _, _ = _make_stream(api_key_id=None, api_secret_key=None)
-        with pytest.raises(AlpacaCredentialsMissing):
+        with pytest.raises(StreamCredentialsMissing):
             asyncio.run(stream._connect_once())
 
 
@@ -142,7 +137,7 @@ class _FakeWebSocket:
 
 
 class TestAuthErrorCodeClassification:
-    """Confirmed against a real account (see AlpacaStreamTransientError's
+    """Confirmed against a real account (see StreamTransientError's
     docstring): only code 402 means the credentials themselves are
     wrong. Every other auth-stage error is Alpaca's side of the
     handshake and should be retried, not treated as a dead end."""
@@ -150,19 +145,19 @@ class TestAuthErrorCodeClassification:
     def test_code_402_bad_credentials_is_fatal(self):
         stream, _, _ = _make_stream()
         ws = _FakeWebSocket([[{"T": "error", "code": 402, "msg": "auth failed"}]])
-        with pytest.raises(AlpacaAuthRejected, match="auth failed"):
+        with pytest.raises(StreamAuthRejected, match="auth failed"):
             asyncio.run(stream._authenticate(ws))
 
     def test_code_406_connection_limit_is_transient(self):
         stream, _, _ = _make_stream()
         ws = _FakeWebSocket([[{"T": "error", "code": 406, "msg": "connection limit exceeded"}]])
-        with pytest.raises(AlpacaStreamTransientError, match="connection limit exceeded"):
+        with pytest.raises(StreamTransientError, match="connection limit exceeded"):
             asyncio.run(stream._authenticate(ws))
 
     def test_code_404_login_timeout_is_transient(self):
         stream, _, _ = _make_stream()
         ws = _FakeWebSocket([[{"T": "error", "code": 404, "msg": "auth timeout"}]])
-        with pytest.raises(AlpacaStreamTransientError):
+        with pytest.raises(StreamTransientError):
             asyncio.run(stream._authenticate(ws))
 
     def test_connected_then_authenticated_success_returns_cleanly(self):
@@ -186,7 +181,7 @@ class TestAuthErrorCodeClassification:
             nonlocal call_count
             call_count += 1
             if call_count == 1:
-                raise AlpacaStreamTransientError("connection limit exceeded")
+                raise StreamTransientError("connection limit exceeded")
             stream.stop()  # succeed on the second attempt, then stop cleanly
 
         stream._connect_once = fake_connect_once

@@ -481,7 +481,7 @@ body {
   text-transform: capitalize;
 }
 
-/* ---------- Live stream panel (Alpaca WebSocket, v0.1.12) ---------- */
+/* ---------- Live stream panel (Alpaca v0.1.12 / Massive v0.1.13 WebSocket) ---------- */
 
 .live-stream-panel {
   margin-top: 14px;
@@ -494,6 +494,19 @@ body {
   align-items: center;
   justify-content: space-between;
   gap: 8px;
+}
+
+.live-stream-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.live-stream-controls select {
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  padding: 5px 8px;
+  font-size: 0.85rem;
 }
 
 .live-stream-status {

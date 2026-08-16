@@ -34,3 +34,9 @@ export interface StreamQuoteMessage {
 }
 
 export type StreamMessage = StreamStatusMessage | StreamQuoteMessage;
+
+// Providers the streaming route (backend/app/streaming/hub.py's
+// STREAM_FACTORIES) actually supports -- a narrower set than
+// LiveQuoteProvider above, since Schwab has no streaming integration
+// yet. Massive added v0.1.13, mirroring Alpaca's v0.1.12 shape.
+export type StreamProvider = "alpaca" | "massive";
