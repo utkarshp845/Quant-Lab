@@ -137,6 +137,24 @@ class TestGetHistoricalData:
         provider = _make_provider(handler)
         provider.get_historical_data(symbol="TSLA", start=date(2026, 8, 1), end=date(2026, 8, 1), multiplier=5, timespan="minute")
 
+    def test_fractional_volume_is_rounded_to_the_nearest_share(self):
+        """Confirmed against a real account, not hypothetical: Massive's
+        "v" can come back as a float (e.g. 27820813.411849), which the
+        MarketBar model correctly rejects as a raw int (a share count is
+        conceptually whole). This was an actual ValidationError against
+        real TSLA data before being fixed -- see massive_provider.py's
+        get_historical_data for why round() and not int()/truncation."""
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            bar = dict(TSLA_BARS_MS[0], v=27_820_813.411849)
+            return _bars_response("TSLA", [bar])
+
+        provider = _make_provider(handler)
+        bars = provider.get_historical_data(symbol="TSLA", start=date(2026, 8, 10), end=date(2026, 8, 10))
+
+        assert bars[0].volume == 27_820_813
+        assert isinstance(bars[0].volume, int)
+
     def test_empty_results_returns_an_empty_list_not_an_error(self):
         def handler(request: httpx.Request) -> httpx.Response:
             return _bars_response("TSLA", [])
@@ -161,6 +179,55 @@ class TestGetHistoricalData:
         provider = _make_provider(handler)
         with pytest.raises(httpx.HTTPStatusError):
             provider.get_historical_data(symbol="TSLA", start=date(2026, 8, 1), end=date(2026, 8, 1))
+
+
+class TestPlanEntitlement403:
+    """Confirmed against a real account: bars work on the free plan,
+    but /v2/last/nbbo and /v2/last/trade return 403 NOT_AUTHORIZED on
+    it. These lock in that a 403 specifically gets turned into a clear,
+    actionable RuntimeError -- not that it's swallowed or hidden."""
+
+    def test_403_on_latest_quote_raises_a_clear_runtime_error(self):
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                403,
+                json={
+                    "status": "NOT_AUTHORIZED",
+                    "request_id": "abc123",
+                    "message": "You are not entitled to this data. Please upgrade your plan at https://massive.com/pricing",
+                },
+            )
+
+        provider = _make_provider(handler)
+        with pytest.raises(RuntimeError, match="not entitled") as exc_info:
+            provider.get_latest_quote(symbol="TSLA")
+
+        # The API's own message is surfaced, not swallowed or reworded away.
+        assert "upgrade your plan" in str(exc_info.value)
+        assert "get_latest_quote" in str(exc_info.value) or "real-time quotes" in str(exc_info.value)
+
+    def test_403_with_non_json_body_still_raises_a_clear_error(self):
+        """The friendly-message extraction must not itself crash if the
+        403 body isn't JSON (e.g. an upstream proxy error page)."""
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(403, text="<html>Forbidden</html>")
+
+        provider = _make_provider(handler)
+        with pytest.raises(RuntimeError, match="not entitled"):
+            provider.get_latest_quote(symbol="TSLA")
+
+    def test_non_403_errors_still_raise_the_raw_http_error(self):
+        """Only 403 gets the friendly treatment -- other status codes
+        (401 bad key, 500 upstream failure, ...) still surface as a
+        plain httpx.HTTPStatusError, unchanged from before this fix."""
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(401, json={"status": "ERROR", "message": "Unknown API Key"})
+
+        provider = _make_provider(handler)
+        with pytest.raises(httpx.HTTPStatusError):
+            provider.get_latest_quote(symbol="TSLA")
 
 
 class TestGetLatestQuote:
