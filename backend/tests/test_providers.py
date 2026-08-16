@@ -104,11 +104,15 @@ class TestProviderRegistry:
 
 
 class TestPlaceholderProviders:
-    """AlpacaProvider, MassiveProvider, SchwabProvider: structure and
-    configuration only. None has live API integration yet -- these
-    tests lock in the "fail loudly, not silently" contract so a future
-    PR that actually implements one of them has a clear point where
-    behavior is expected to change (NotImplementedError -> real data)."""
+    """AlpacaProvider, MassiveProvider, SchwabProvider: all three now
+    have real get_historical_data()/get_latest_quote() integrations
+    (see each provider's dedicated test file); get_chain() (options
+    data) remains a placeholder for all three, since that's a
+    separate, larger integration none of them have tackled yet. These
+    tests lock in the "fail loudly, not silently" contract for
+    whatever's still unimplemented, so a future PR that adds
+    get_chain() to one of them has a clear point where behavior is
+    expected to change (NotImplementedError -> real data)."""
 
     @pytest.mark.parametrize(
         "provider_cls,expected_name",
@@ -152,45 +156,27 @@ class TestPlaceholderProviders:
         provider = AlpacaProvider(api_key_id="explicit", api_secret_key="explicit")
         assert provider.api_key_id == "explicit"
 
-    def test_schwab_still_fully_placeholder_capabilities_are_not_implemented(self):
-        """SchwabProvider has no real integration at all yet -- confirm
-        every optional capability still inherits base.py's
-        NotImplementedError default. AlpacaProvider and MassiveProvider
-        are excluded here: get_historical_data/get_latest_quote are now
-        real integrations for both (see test_alpaca_provider.py /
-        test_massive_provider.py); only get_chain() (options) and
-        stream_quotes() remain unimplemented for them, covered below and
-        in each provider's dedicated test file."""
-        provider = SchwabProvider()
-        with pytest.raises(NotImplementedError):
-            provider.get_historical_data()
-        with pytest.raises(NotImplementedError):
-            provider.get_latest_quote()
-        with pytest.raises(NotImplementedError):
-            provider.stream_quotes()
+    def test_schwab_without_refresh_token_raises_a_clear_error(self, monkeypatch):
+        monkeypatch.delenv("SCHWAB_REFRESH_TOKEN", raising=False)
+        with pytest.raises(RuntimeError, match="SCHWAB_REFRESH_TOKEN"):
+            SchwabProvider(client_id="id", client_secret="secret").get_chain()
 
-    @pytest.mark.parametrize(
-        "provider_cls,kwargs",
-        [
-            (AlpacaProvider, {"api_key_id": "fake", "api_secret_key": "fake"}),
-            (MassiveProvider, {"api_key": "fake"}),
-        ],
-    )
+    _REAL_EQUITY_PROVIDERS = [
+        (AlpacaProvider, {"api_key_id": "fake", "api_secret_key": "fake"}),
+        (MassiveProvider, {"api_key": "fake"}),
+        (SchwabProvider, {"client_id": "fake", "client_secret": "fake", "refresh_token": "fake"}),
+    ]
+
+    @pytest.mark.parametrize("provider_cls,kwargs", _REAL_EQUITY_PROVIDERS)
     def test_options_chain_still_not_implemented(self, provider_cls, kwargs):
-        """get_chain() (options data) is still a placeholder for both
-        real-equity-data providers -- scope for both integrations was
-        equity data (bars/quotes) only."""
+        """get_chain() (options data) is still a placeholder for all
+        three real-equity-data providers -- scope for each integration
+        was equity data (bars/quotes) only."""
         provider = provider_cls(**kwargs)
         with pytest.raises(NotImplementedError, match="options-chain"):
             provider.get_chain()
 
-    @pytest.mark.parametrize(
-        "provider_cls,kwargs",
-        [
-            (AlpacaProvider, {"api_key_id": "fake", "api_secret_key": "fake"}),
-            (MassiveProvider, {"api_key": "fake"}),
-        ],
-    )
+    @pytest.mark.parametrize("provider_cls,kwargs", _REAL_EQUITY_PROVIDERS)
     def test_stream_quotes_still_not_implemented(self, provider_cls, kwargs):
         provider = provider_cls(**kwargs)
         with pytest.raises(NotImplementedError):

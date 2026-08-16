@@ -520,28 +520,47 @@ placeholder, since that's a separate, larger integration.
 is the Polygon.io rebrand — gained the same real **equity** data in
 v0.1.6, against Massive's own REST API (a single `MASSIVE_API_KEY`,
 sent as an `Authorization: Bearer` header); its `get_chain()` is a
-placeholder for the same reason Alpaca's is. `SchwabProvider` remains a
-full placeholder: structure, credential configuration (via
-`app/config.py` + env vars — see `backend/.env.example`), and every
-method raising `NotImplementedError` rather than returning fake data —
-so selecting it before it's built fails loudly instead of silently.
-`registry.py` maps provider names to classes and honors a
-`MARKET_DATA_PROVIDER` env var, so picking a provider is a config
-change, never a code change in the calculator or scanner. What's still
-missing, and is the actual point of this phase, is options-chain data
-from a live provider — the thing the calculator itself actually
-consumes; equity data from Alpaca/Massive isn't wired into any API
-route or the frontend yet either (deliberately kept backend-only for
-now — see the roadmap discussion around v0.1.4/v0.1.6). The application
-must not be architected around scraping any specific broker's UI (e.g.
-Thinkorswim) — that's a fragile, single implementation of the
-interface, not the interface itself.
+placeholder for the same reason Alpaca's is. `SchwabProvider`
+(`backend/app/providers/schwab_provider.py`) gained the same real
+**equity** data in v0.1.8, but is architecturally the odd one out —
+see the callout below. Its `get_chain()` is a placeholder for the same
+reason as the other two. `registry.py` maps provider names to classes
+and honors a `MARKET_DATA_PROVIDER` env var, so picking a provider is a
+config change, never a code change in the calculator or scanner.
+What's still missing, and is the actual point of this phase, is
+options-chain data from a live provider — the thing the calculator
+itself actually consumes; equity data from Alpaca/Massive/Schwab isn't
+wired into any API route or the frontend yet either (deliberately kept
+backend-only for now — see the roadmap discussion around
+v0.1.4/v0.1.6/v0.1.8). The application must not be architected around
+scraping any specific broker's UI (e.g. Thinkorswim) — that's a
+fragile, single implementation of the interface, not the interface
+itself.
+
+**Why Schwab is architecturally different from Alpaca/Massive.** Both
+of those use a static API key. Schwab uses OAuth2: an access token
+lasts 30 minutes and refreshes automatically (`SchwabProvider` does
+this itself, transparently); a refresh token lasts **7 days**, and
+renewing it requires an interactive login on Schwab's own site — your
+credentials, your MFA — that no code in this repo (and no AI assistant)
+performs for you. `backend/scripts/schwab_oauth_bootstrap.py` walks
+through that one step: it builds the login URL, you open it yourself
+and log in, then paste back the redirected URL so the script can
+exchange the authorization code for a refresh token. Re-run it roughly
+weekly. Also, unlike Alpaca/Massive's fully public API references,
+Schwab's official docs are gated behind an approved developer account,
+which wasn't available while building this — `schwab_provider.py`'s
+endpoint paths and most response field names are confirmed against
+multiple independent, real client libraries' source code (not just
+docs prose), but one field (the quote timestamp) is explicitly flagged
+in that file as best-effort/unconfirmed until validated against a real
+account.
 
 ```
                   ┌── CSVProvider        (done, v0.1.2 -- options chain)
 MarketDataProvider┤── AlpacaProvider     (v0.1.4 -- equity bars/quotes done; options chain placeholder)
                   ├── MassiveProvider    (v0.1.6 -- equity bars/quotes done; options chain placeholder)
-                  ├── SchwabProvider     (placeholder, v0.1.2)
+                  ├── SchwabProvider     (v0.1.8 -- equity bars/quotes done, OAuth2; options chain placeholder)
                   └── ...
                           │
                           ▼
@@ -825,11 +844,11 @@ meaning of "the provider layer is an adapter": provider code goes from
 API/CSV to normalized data; engine code goes from normalized data to
 calculations; nothing skips the middle step.
 
-**How to add a real live provider** (once you're ready to move
-`schwab_provider.py`, or `alpaca_provider.py`'s / `massive_provider.py`'s
-still-placeholder `get_chain()`, beyond a stub). Both `alpaca_provider.py`
-and `massive_provider.py`'s `get_historical_data()` / `get_latest_quote()`
-are real, worked examples of this exact process (v0.1.4, v0.1.6):
+**How to add a real live provider** (once you're ready to move any of
+the three providers' still-placeholder `get_chain()` beyond a stub).
+`alpaca_provider.py`, `massive_provider.py`, and `schwab_provider.py`'s
+`get_historical_data()` / `get_latest_quote()` are real, worked
+examples of this exact process (v0.1.4, v0.1.6, v0.1.8):
 
 1. Implement the method(s) that provider supports (`get_chain()` and/or
    `get_historical_data()` / `get_latest_quote()` / `stream_quotes()`) to
@@ -837,26 +856,47 @@ are real, worked examples of this exact process (v0.1.4, v0.1.6):
    / `MarketBar` / `Quote`. No other file needs to change — not
    `registry.py` (already wired), not the API routes, not the calculator.
    Confirm the provider's actual endpoint/field names against its
-   published API reference rather than guessing — both providers'
-   module docstrings name exactly which docs pages were checked, and
-   `massive_provider.py`'s also documents two easy-to-transpose details
-   (millisecond vs. nanosecond timestamps on different endpoints;
-   case-sensitive bid/ask field names) that a second, independent
-   implementation was useful for catching early.
-2. Make the HTTP client an injectable constructor argument (see either
+   published API reference rather than guessing — each provider's
+   module docstring names exactly which sources were checked. If the
+   official docs are gated (Schwab's are, behind an approved developer
+   account — see `schwab_provider.py`'s docstring for how that was
+   worked around by cross-checking multiple independent client
+   libraries' actual source code instead), explicitly flag whichever
+   fields couldn't be independently confirmed rather than presenting a
+   guess as settled fact — and let it fail loudly (a `KeyError`, not a
+   silently wrong value) if the guess turns out wrong.
+2. If the provider's auth is anything other than a static key (Schwab's
+   OAuth2 access/refresh-token cycle is the worked example), keep the
+   distinction sharp between what code can automate (ordinary token
+   refresh) and what requires a human in the loop (the initial and
+   every subsequent interactive login) — see `schwab_provider.py`'s
+   module docstring and `scripts/schwab_oauth_bootstrap.py`. No
+   provider in this codebase should ever attempt the interactive-login
+   part itself.
+3. Make the HTTP client an injectable constructor argument (see any
    provider's `client` parameter) so tests can supply a mocked transport
    (`httpx.MockTransport`) instead of making real network calls with
-   real credentials.
-3. Add tests against that mocked transport covering: successful parsing,
+   real credentials. If there's also a token-refresh cycle to test, make
+   the clock injectable too (see `schwab_provider.py`'s `now` parameter)
+   so token-expiry tests don't depend on real wall-clock timing.
+4. Add tests against that mocked transport covering: successful parsing,
    the credentials-missing path raising before any request is sent, an
    HTTP error propagating rather than being silently swallowed, and any
    unit-conversion or field-mapping detail that could silently transpose
-   — see `tests/test_alpaca_provider.py` and `tests/test_massive_provider.py`.
-4. If you want to sanity-check it against your own real account outside
+   — see `tests/test_alpaca_provider.py`, `tests/test_massive_provider.py`,
+   and `tests/test_schwab_provider.py`.
+5. If you want to sanity-check it against your own real account outside
    the test suite, add a manual (non-pytest, opt-in) script like
-   `scripts/alpaca_manual_check.py` / `scripts/massive_manual_check.py`.
-5. Update this README's Phase 4 entry and this section to say the
-   provider (or that specific method) is real, not a placeholder.
+   `scripts/alpaca_manual_check.py` / `scripts/massive_manual_check.py`
+   — or, for an OAuth provider, a one-time bootstrap script like
+   `scripts/schwab_oauth_bootstrap.py`.
+6. Update this README's Phase 4 entry and this section to say the
+   provider (or that specific method) is real, not a placeholder, and
+   to remove or resolve any "unconfirmed" caveats once validated
+   against a real account — Massive's fractional-volume bug and 403
+   entitlement handling (see git history around v0.1.7) are the
+   worked example of "confirm against a real account, then fix
+   what's wrong" actually catching something.
 
 **How credentials are handled.** `app/config.py` is the only module that
 reads `os.environ` directly — every provider takes credentials as
@@ -873,6 +913,17 @@ hardcoded in a provider file. `MARKET_DATA_PROVIDER` selects which
 provider `registry.get_default_provider()` returns; the CSV upload route
 (`/api/csv-import`) always uses `"csv"` explicitly regardless of this
 setting, since there's nothing to "configure" about uploading a file.
+
+One credential is different in kind, not just mechanism:
+`SCHWAB_REFRESH_TOKEN` has no self-serve "generate a key" equivalent —
+it only exists after an interactive login on Schwab's own site, which
+no code in this repo performs (`scripts/schwab_oauth_bootstrap.py`
+builds the login URL and exchanges the resulting code for a token, but
+the login itself is a manual step, every time). This is a deliberate
+line: automating ordinary token refresh (an expired access token,
+inside a still-valid 7-day refresh window) is fine; automating a
+brokerage login is not, regardless of which AI assistant or script is
+doing the automating.
 
 ---
 
@@ -907,7 +958,9 @@ backend/
                                     quotes, Alpaca Market Data API v2); get_chain (options) still a stub
       massive_provider.py          v0.1.6: real get_historical_data/get_latest_quote (equity bars/
                                     quotes, Massive/Polygon.io REST API); get_chain (options) still a stub
-      schwab_provider.py           v0.1.2: placeholder -- structure + config, no live integration
+      schwab_provider.py           v0.1.8: real get_historical_data/get_latest_quote (equity bars/
+                                    quotes, Schwab Trader API, OAuth2 access-token refresh); get_chain
+                                    (options) still a stub -- see docstring for confirmed-vs-guessed fields
       registry.py                  Provider-name -> class map + MARKET_DATA_PROVIDER-driven default
     api/
       bear_put_spread.py           Route handlers, calls calculations in sequence
@@ -916,6 +969,9 @@ backend/
     alpaca_manual_check.py         v0.1.4: opt-in, NOT run by pytest -- hits the real Alpaca API with
                                     your own credentials to sanity-check TSLA/NVDA bars + quotes
     massive_manual_check.py        v0.1.6: same idea, against the real Massive API
+    schwab_oauth_bootstrap.py      v0.1.8: ONE-TIME INTERACTIVE -- builds the Schwab login URL, walks
+                                    you through logging in yourself, exchanges the resulting code for a
+                                    refresh token. Re-run roughly every 7 days when it expires.
   tests/
     test_calculations.py           Pure-function unit tests + graduation example
     test_validation.py             Input validation tests
@@ -930,6 +986,9 @@ backend/
     test_alpaca_provider.py        v0.1.4: mocked-HTTP tests for real Alpaca bars/quotes (TSLA/NVDA)
     test_massive_provider.py       v0.1.6: mocked-HTTP tests for real Massive bars/quotes (TSLA/NVDA),
                                     incl. explicit ms-vs-ns timestamp and bid/ask-case regression tests
+    test_schwab_provider.py        v0.1.8: mocked-HTTP tests for real Schwab bars/quotes (TSLA/NVDA),
+                                    incl. OAuth2 access-token refresh/caching/re-refresh (injectable clock,
+                                    no real timing dependency) and per-credential missing-env-var checks
     test_config.py                 v0.1.2: MARKET_DATA_PROVIDER + credential env-var reading
     fixtures/sample_thinkorswim_chain.csv  v0.1.1: example chain export
   requirements.txt
