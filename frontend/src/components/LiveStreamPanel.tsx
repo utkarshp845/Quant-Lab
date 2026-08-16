@@ -33,6 +33,14 @@ const fmtTime = (d: Date) =>
  * StreamProvider's definition) -- switching it tears down the old
  * WebSocket and opens a new one for the newly-selected provider.
  *
+ * bid/ask can be null (v0.1.15): if Massive's real-time WebSocket
+ * isn't entitled on the current plan, the backend falls back to
+ * polling free-tier minute bars instead (see
+ * backend/app/streaming/massive_stream.py's MassiveStream) -- a bar
+ * has a price and volume but no bid/ask, so those render as "not
+ * available" rather than a fabricated number, and the caveat line
+ * below the quote card explains which case is showing.
+ *
  * Deliberately separate from LiveQuotePanel (the manual, multi-
  * provider, one-shot lookup used elsewhere on this page and in the CSV
  * workflow): that component's click-to-fetch request/response model
@@ -64,7 +72,7 @@ export function LiveStreamPanel({ symbol }: LiveStreamPanelProps) {
         </span>
       </div>
 
-      {statusDetail && status !== "connected" && <div className="live-stream-detail">{statusDetail}</div>}
+      {statusDetail && <div className="live-stream-detail">{statusDetail}</div>}
 
       {quote ? (
         <div className="live-quote-card">
@@ -77,16 +85,18 @@ export function LiveStreamPanel({ symbol }: LiveStreamPanelProps) {
             <dt>Price</dt>
             <dd>{quote.price != null ? fmtUsd(quote.price) : "—"}</dd>
             <dt>Bid</dt>
-            <dd>{fmtUsd(quote.bid)}</dd>
+            <dd>{quote.bid != null ? fmtUsd(quote.bid) : "not available"}</dd>
             <dt>Ask</dt>
-            <dd>{fmtUsd(quote.ask)}</dd>
+            <dd>{quote.ask != null ? fmtUsd(quote.ask) : "not available"}</dd>
             <dt>Volume</dt>
             <dd>{quote.volume != null ? fmtVolume(quote.volume) : "not available"}</dd>
             <dt>Last update</dt>
             <dd>{lastUpdated ? fmtTime(lastUpdated) : fmtTime(new Date(quote.timestamp))}</dd>
           </dl>
           <div className="live-stream-caveat">
-            Volume is cumulative since this stream connected, not the full session total.
+            {quote.bid == null && quote.ask == null
+              ? "No live bid/ask on this plan -- price and volume are from the latest polled minute bar, not a real-time quote."
+              : "Volume is cumulative since this stream connected, not the full session total."}
           </div>
         </div>
       ) : (

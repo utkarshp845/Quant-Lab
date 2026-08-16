@@ -35,7 +35,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from abc import ABC, abstractmethod
-from typing import Awaitable, Callable
+from typing import Awaitable, Callable, Protocol, runtime_checkable
 
 from app.models.market_data import LiveQuote
 from websockets.exceptions import WebSocketException
@@ -63,6 +63,26 @@ class StreamTransientError(RuntimeError):
     """Retryable: the connection attempt failed for a reason that
     isn't "these credentials are wrong" -- see the raising provider's
     module docstring for what specifically maps here and why."""
+
+
+@runtime_checkable
+class QuoteStream(Protocol):
+    """Structural contract every stream app/streaming/hub.py's
+    STREAM_FACTORIES registers must satisfy: async run() (loops until
+    stop() is called), stop() (signals it to end), and a provider_name
+    attribute. Deliberately NOT "must inherit ReconnectingQuoteStream"
+    -- MassiveStream (app/streaming/massive_stream.py) satisfies this
+    by composition instead, since its WebSocket-then-polling-fallback
+    shape isn't itself WebSocket-shaped the way ReconnectingQuoteStream
+    assumes. Every ReconnectingQuoteStream subclass already satisfies
+    this Protocol for free (run/stop/provider_name are all present).
+    """
+
+    provider_name: str
+
+    async def run(self) -> None: ...
+
+    def stop(self) -> None: ...
 
 
 class ReconnectingQuoteStream(ABC):
