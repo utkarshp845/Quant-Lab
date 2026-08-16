@@ -142,6 +142,58 @@ class TestGetHistoricalData:
             provider.get_historical_data(symbol="TSLA", start=date(2026, 8, 1), end=date(2026, 8, 1))
 
 
+class TestGetHistoricalDataPagination:
+    """v0.1.16: get_historical_data() follows next_page_token until it's
+    null, rather than silently returning only the first page -- an
+    intraday timeframe over a real date range can span several pages."""
+
+    def test_follows_next_page_token_until_exhausted(self):
+        page_1 = [{"t": "2026-08-10T04:00:00Z", "o": 245.10, "h": 248.75, "l": 243.20, "c": 247.55, "v": 100}]
+        page_2 = [{"t": "2026-08-11T04:00:00Z", "o": 247.60, "h": 250.00, "l": 246.00, "c": 249.30, "v": 200}]
+        page_3 = [{"t": "2026-08-12T04:00:00Z", "o": 249.00, "h": 251.00, "l": 248.00, "c": 250.00, "v": 300}]
+        responses = iter(
+            [
+                httpx.Response(200, json={"symbol": "TSLA", "bars": page_1, "next_page_token": "tok1"}),
+                httpx.Response(200, json={"symbol": "TSLA", "bars": page_2, "next_page_token": "tok2"}),
+                httpx.Response(200, json={"symbol": "TSLA", "bars": page_3, "next_page_token": None}),
+            ]
+        )
+        seen_page_tokens = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen_page_tokens.append(request.url.params.get("page_token"))
+            return next(responses)
+
+        provider = _make_provider(handler)
+        bars = provider.get_historical_data(symbol="TSLA", start=date(2026, 8, 10), end=date(2026, 8, 12))
+
+        assert [b.volume for b in bars] == [100, 200, 300]
+        assert seen_page_tokens == [None, "tok1", "tok2"]  # first request has no page_token at all
+
+    def test_a_single_page_response_makes_exactly_one_request(self):
+        request_count = 0
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            nonlocal request_count
+            request_count += 1
+            return _bars_response("TSLA", TSLA_BARS)
+
+        provider = _make_provider(handler)
+        provider.get_historical_data(symbol="TSLA", start=date(2026, 8, 10), end=date(2026, 8, 11))
+
+        assert request_count == 1
+
+    def test_exceeding_max_pages_raises_instead_of_looping_forever(self):
+        def handler(request: httpx.Request) -> httpx.Response:
+            # Always claims there's another page -- simulates a
+            # misbehaving upstream that never actually exhausts.
+            return httpx.Response(200, json={"symbol": "TSLA", "bars": [], "next_page_token": "always-more"})
+
+        provider = _make_provider(handler)
+        with pytest.raises(RuntimeError, match="did not finish paginating"):
+            provider.get_historical_data(symbol="TSLA", start=date(2026, 8, 1), end=date(2026, 8, 1))
+
+
 class TestGetLatestQuote:
     def test_tsla_quote_combines_bid_ask_and_last_trade(self):
         def handler(request: httpx.Request) -> httpx.Response:

@@ -56,6 +56,12 @@ spreadsheet — but with every step shown, not hidden behind a single
   underlying price (pick Alpaca, Massive, or Schwab) — a reference for how
   stale the imported price is, not an input the calculator uses. See
   [13. Market data provider architecture](#13-market-data-provider-architecture-v012).
+- **(v0.1.16) Fetches historical OHLCV bars** for TSLA/NVDA (pick Alpaca or
+  Massive, a timeframe, and a date range) and can diff an uploaded CSV of
+  bars against that same request, surfacing row-count/timestamp/OHLC/
+  volume differences without auto-correcting any of them. Independent of
+  the calculator — see
+  [15. Historical market data](#15-historical-market-data-v0116).
 
 ## 3. How to install dependencies
 
@@ -433,12 +439,19 @@ chance of profit."*
 
 ## 10. What is intentionally NOT implemented yet
 
-Live market data, brokerage APIs for *reading* data, machine learning,
-historical backtesting, a database, authentication, user accounts,
-portfolio management, a market-wide scanner. All of that is out of scope
-for now — the roadmap in section 11 below has a phase for most of it —
-which is about correctness and transparency of a single, manually-driven
-calculation coming first.
+Machine learning, a database, authentication, user accounts, portfolio
+management. All of that is out of scope for now — the roadmap in section
+11 below has a phase for most of it — which is about correctness and
+transparency of a single, manually-driven calculation coming first.
+
+Historical OHLCV bar retrieval landed in v0.1.16 (equities only, TSLA/NVDA,
+Alpaca/Massive — see [15. Historical market data](#15-historical-market-data-v0116)
+below), but **backtesting itself** — running a strategy against that data
+and reporting simulated results — has not: this phase stops at "fetch and
+normalize bars," on purpose, and does not run any calculation against
+them. Historical **options** data (as opposed to equity bars) is also
+still not implemented — same placeholder `get_chain()` situation described
+in section 13.
 
 **One item is not "not yet" — it is permanently out of scope, at every
 phase, including the paper-trading and signal-generation phases below:**
@@ -1248,6 +1261,105 @@ card.
    backend is confirmed back up, see the operational-gotcha callout
    above before assuming something is broken.
 
+## 15. Historical market data (v0.1.16)
+
+**Scope, deliberately narrow.** Equities only, OHLCV bars only, TSLA/NVDA
+only (see `app/api/historical_data.py`'s `ALLOWED_SYMBOLS`), a
+configurable timeframe (`1m`/`5m`/`15m`/`1h`/`1d`) and start/end date,
+Alpaca or Massive. No historical **options** data (section 13's
+`get_chain()` placeholders are unchanged), no database, no backtesting,
+no scanner changes, no changes to any quantitative calculation. This
+phase stops at "ask a provider for bars, normalize them, return them" --
+what a future backtesting phase would build on top of, not that phase
+itself.
+
+**Reused the existing provider abstraction; nothing parallel.**
+`MarketDataProvider.get_historical_data()` (section 13) already existed
+and was already real for Alpaca/Massive/Schwab since v0.1.4/6/8 -- this
+phase's job was giving it its first actual HTTP route and pagination,
+not building a second way to fetch bars. `GET
+/market-data/{symbol}/history` (`app/api/historical_data.py`) validates
+the request, resolves a provider via the same `registry.get_provider()`
+every other route uses, translates this route's normalized timeframe
+vocabulary (`1m`/`5m`/.../`1d`) into each provider's own (Alpaca's
+`"1Min"`/`"1Hour"`/`"1Day"` strings; Massive's `(multiplier, timespan)`
+pairs), and returns `HistoricalBarsResponse` -- a flat, provider-
+independent shape (`HistoricalBar`: symbol/timestamp/open/high/low/
+close/volume/provider, `app/models/market_data.py`) built the same way
+`LiveQuote` already flattens `Quote` (section 13). The frontend consumes
+only this normalized shape, never a provider's raw JSON.
+
+**Pagination, added to both providers (a real bug found and fixed along
+the way).** Before this phase, `AlpacaProvider.get_historical_data()`
+and `MassiveProvider.get_historical_data()` each made exactly one
+request and silently returned only its first page -- fine for the
+manual check scripts' daily-bar use, wrong for an intraday timeframe
+over a real date range, which can span many pages. Both now loop --
+Alpaca via its `next_page_token`, Massive via its `next_url` -- capped
+at 50 pages so a misbehaving upstream can't loop forever. Building
+Massive's loop caught a real, would-have-shipped bug: `httpx.Client.get(url,
+params=X)` *replaces* `url`'s existing query string whenever `X` is not
+`None` -- even `{}` -- so the first version of this loop silently
+stripped `next_url`'s own `?cursor=...` and would have re-requested page
+1 forever against a real account. Fixed by passing `params=None` (not
+`{}`) when following `next_url`; see `massive_provider.py`'s
+`get_historical_data()` and the regression test in
+`tests/test_massive_provider.py::TestGetHistoricalDataPagination` that
+caught it via a mocked multi-page transport.
+
+**Errors and rate limits map to specific HTTP statuses**, matching
+section 13's `GET .../quote` convention exactly: unknown provider name
+or unsupported symbol/timeframe/date range -> 404/400, provider doesn't
+support historical data -> 501, missing credentials or a provider's own
+entitlement error -> 503, upstream 429 -> 429 (passed through, not
+swallowed), any other upstream HTTP error -> 502. No credentials are
+ever part of a request or response this route makes or returns.
+
+**The CSV-vs-provider comparison (`POST /market-data/history/compare`,
+`app/api/historical_comparison.py`) is the single most important test
+of this feature**, per the spec it was built against: upload a CSV of
+OHLCV bars, and diff it against a live provider request for the same
+symbol/timeframe/period. `app/ingestion/ohlcv_csv.py` parses the CSV
+(its own column-alias list -- open/high/low/close/volume/timestamp,
+plus an optional symbol column -- separate from `csv_normalizer.py`'s
+options-chain-specific columns, same "one alias list per data shape"
+reasoning `column_mapping.py` already documents). The comparison route
+reuses the exact same validated path `GET .../history` uses for the API
+side (`fetch_normalized_bars()`, factored out for exactly this reuse),
+aligns both sides by timestamp, and reports -- never auto-corrects --
+row count difference, which timestamps are CSV-only/API-only/matched,
+and the signed O/H/L/C/volume delta for every matched timestamp, plus
+headline max-diff numbers. See `app/models/historical_comparison.py`'s
+docstring for why there is deliberately no `passed`/`is_match` field
+anywhere in that response: deciding whether a given discrepancy matters
+is the reader's job, the same principle `scripts/cross_validate_providers.py`
+already holds to for provider-vs-provider comparisons.
+
+**This repo's own CSV fixture can't be used for that comparison, and
+that's worth stating plainly rather than glossing over.**
+`backend/tests/fixtures/sample_thinkorswim_chain.csv` -- the CSV
+referenced elsewhere in this README (section 12) -- is an **options-
+chain snapshot** for a placeholder underlying symbol ("MCL"): one point
+in time, strike/bid/ask/delta/IV columns, no OHLCV time series at all.
+It is not a bar export for TSLA/NVDA, so it cannot be fed through
+`/market-data/history/compare` for a literal same-symbol overlap test.
+The comparison route itself is generic -- any CSV of OHLCV bars for
+TSLA or NVDA over a real period works -- but exercising it with real
+numbers needs an actual bar export (e.g. one saved from a broker's chart
+export, or the output of `GET .../history` itself saved back to CSV),
+which nothing in this repo currently provides.
+
+**UI (`HistoricalDataPanel.tsx`, embedded on `CalculatorPage` below the
+existing live-data proof-of-concept, same "independent of the
+calculator" convention as `LiveQuotePanel`/`LiveStreamPanel`).** Provider
+(Alpaca/Massive), Symbol (TSLA/NVDA), Timeframe, Start/End date, "Fetch
+bars" -> bar count, first/last timestamp, first-rows/last-rows tables.
+A separate "Compare against CSV" control (reusing the same symbol/
+provider/timeframe/date selection) uploads a file to the route above and
+renders its full report: the headline counts, any CSV row-parse errors,
+and a per-timestamp diff table color-coded the same way the calculator
+already colors P/L (green/red for positive/negative).
+
 ---
 
 ## Project structure
@@ -1266,7 +1378,12 @@ backend/
                                     v0.1.11 added LiveQuote, the flat HTTP response shape (symbol/price/
                                     bid/ask/volume/timestamp/provider) GET /market-data/.../quote returns.
                                     v0.1.15: LiveQuote.bid/.ask became optional (None for the Massive
-                                    polling fallback's bar-derived quotes, which have no bid/ask at all)
+                                    polling fallback's bar-derived quotes, which have no bid/ask at all).
+                                    v0.1.16: added HistoricalBar (flat HTTP shape GET .../history returns,
+                                    same MarketBar-flattening pattern as LiveQuote/Quote) + HistoricalBarsResponse
+      historical_comparison.py     v0.1.16: response shapes for POST /market-data/history/compare -- see
+                                    that route's docstring for why there is deliberately no pass/fail
+                                    verdict field anywhere in this shape (numbers only, reader decides)
     calculations/
       stats.py                     normal_cdf
       bear_put_spread.py           All core formulas, one function each
@@ -1277,14 +1394,22 @@ backend/
       column_mapping.py            Broker-style column-name aliases -> normalized fields
       value_parsing.py             Per-cell parsers (float/int/IV/option-type/date), never fabricate
       csv_normalizer.py            Row-by-row validation -> NormalizedOption dicts + row errors
+      ohlcv_csv.py                 v0.1.16: OHLCV bar CSV parser (its own column-alias list, separate
+                                    from csv_normalizer.py's options-chain-specific one) -- backs the
+                                    CSV-vs-provider historical-data comparison route
     providers/                     v0.1.2: MarketDataProvider interface (Phase 4, data-source half)
       base.py                      MarketDataProvider ABC + NormalizedChainResult; optional capability
                                     methods (get_historical_data/get_latest_quote/stream_quotes)
       csv_provider.py              CSVProvider -- thin wrapper around ingestion/csv_normalizer.py
       alpaca_provider.py           v0.1.4: real get_historical_data/get_latest_quote (equity bars/
-                                    quotes, Alpaca Market Data API v2); get_chain (options) still a stub
+                                    quotes, Alpaca Market Data API v2); get_chain (options) still a stub.
+                                    v0.1.16: get_historical_data() paginates via next_page_token instead
+                                    of silently returning only the first page
       massive_provider.py          v0.1.6: real get_historical_data/get_latest_quote (equity bars/
-                                    quotes, Massive/Polygon.io REST API); get_chain (options) still a stub
+                                    quotes, Massive/Polygon.io REST API); get_chain (options) still a stub.
+                                    v0.1.16: get_historical_data() paginates via next_url -- caught a real
+                                    bug along the way (httpx params={} silently strips an existing URL's
+                                    query string; fixed with params=None) -- see README section 15
       schwab_provider.py           v0.1.8: real get_historical_data/get_latest_quote (equity bars/
                                     quotes, Schwab Trader API, OAuth2 access-token refresh); get_chain
                                     (options) still a stub -- see docstring for confirmed-vs-guessed fields
@@ -1327,6 +1452,16 @@ backend/
                                     server-push route; relays app/streaming/hub.py's status + LiveQuote
                                     frames to one browser tab. v0.1.13: provider checked against the hub's
                                     own STREAM_FACTORIES map (Alpaca + Massive) instead of a hardcoded name
+      historical_data.py           v0.1.16: GET /market-data/{symbol}/history -- first route to call
+                                    get_historical_data() directly (not just as a quote route's volume
+                                    side-lookup); ALLOWED_SYMBOLS/ALLOWED_TIMEFRAMES scope fence (TSLA/
+                                    NVDA, 1m/5m/15m/1h/1d), normalized-timeframe -> per-provider-vocabulary
+                                    translation, same exception->HTTP-status mapping as market_data.py.
+                                    fetch_normalized_bars() factored out for historical_comparison.py to reuse
+      historical_comparison.py     v0.1.16: POST /market-data/history/compare -- uploads a CSV of OHLCV
+                                    bars (via ingestion/ohlcv_csv.py), diffs it against fetch_normalized_bars()'s
+                                    provider call for the same symbol/timeframe/period, reports row-count/
+                                    timestamp/OHLC/volume differences without auto-correcting any of them
   scripts/
     alpaca_manual_check.py         v0.1.4: opt-in, NOT run by pytest -- hits the real Alpaca API with
                                     your own credentials to sanity-check TSLA/NVDA bars + quotes
@@ -1383,7 +1518,20 @@ backend/
     test_market_data_stream_api.py v0.1.12: WebSocket route tests (TestClient.websocket_connect) with the
                                     hub swapped for a fake -- status/quote frame relay, default symbol,
                                     unsupported-provider rejection. v0.1.13 added a Massive-provider case
-    fixtures/sample_thinkorswim_chain.csv  v0.1.1: example chain export
+    test_historical_data_api.py    v0.1.16: mocked-provider tests for GET .../history -- symbol/timeframe/
+                                    date validation, per-provider timeframe-vocabulary translation, the
+                                    full exception->HTTP-status mapping (incl. 429 passthrough), plus a
+                                    real-registry class proving it against actual provider classes
+    test_ohlcv_csv.py              v0.1.16: OHLCV CSV parser tests -- timestamp format coverage (incl. the
+                                    naive-timestamp-assumed-UTC rule), column aliasing, row-level vs.
+                                    whole-file error handling
+    test_historical_comparison_api.py  v0.1.16: POST .../compare tests -- identical/diverging data, CSV-
+                                    only/API-only timestamps, wrong-symbol and out-of-range CSV rows
+                                    excluded (and noted), CSV parse errors surfaced without failing the
+                                    request, the same exception mapping as test_historical_data_api.py
+    fixtures/sample_thinkorswim_chain.csv  v0.1.1: example chain export -- an OPTIONS-CHAIN snapshot
+                                    (underlying "MCL"), not an OHLCV bar time series; cannot be used as-is
+                                    with the v0.1.16 historical-data comparison route -- see README section 15
   requirements.txt
   pytest.ini
   .env.example                     v0.1.2: documents every provider env var; backend/.env is gitignored
@@ -1396,14 +1544,18 @@ frontend/
                                     StreamMessage (status/quote WebSocket frame union). v0.1.13 added
                                     StreamProvider ("alpaca" | "massive" -- narrower than LiveQuoteProvider,
                                     since Schwab doesn't stream). v0.1.15: bid/ask became number | null
-                                    (the Massive polling fallback's bar-derived quotes have neither)
+                                    (the Massive polling fallback's bar-derived quotes have neither).
+                                    v0.1.16 added HistoricalBar/HistoricalBarsResponse/
+                                    HistoricalComparisonResponse (mirroring the backend shapes exactly)
+                                    and the HistoricalDataProvider/HistoricalDataSymbol/Timeframe unions
     calculations/                  TS mirror of the backend formulas
     utils/
       optionToFormState.ts         v0.1.1: NormalizedOption pair -> BearPutSpreadFormState (shared)
       spreadCombinations.ts        v0.1.1: tiny scanner -- all valid combos + filtering
     api/client.ts                  Fetch wrapper + error formatting + importCsv() + getLiveQuote();
                                     exports API_BASE so the streaming hook derives its ws:// URL from
-                                    the same origin instead of hardcoding it a second time
+                                    the same origin instead of hardcoding it a second time. v0.1.16 added
+                                    getHistoricalBars() + compareHistoricalCsv() (multipart upload)
     hooks/
       useQuoteStream.ts            v0.1.12 (as useAlpacaQuoteStream.ts, renamed + parameterized by
                                     `provider` in v0.1.13 once Massive needed the same hook): owns the
@@ -1434,9 +1586,16 @@ frontend/
                                     Bid/Ask render "not available" when null (the Massive polling fallback),
                                     and the caveat line under the quote card switches wording based on
                                     whether bid/ask are present, rather than assuming which provider is active
+      HistoricalDataPanel.tsx      v0.1.16: Provider/Symbol/Timeframe/Start/End controls -- "Fetch bars"
+                                    (bar count, first/last timestamp, first-rows/last-rows tables) and
+                                    "Compare against CSV" (uploads a file, renders the full comparison
+                                    report: headline counts, CSV row errors, per-timestamp diff table).
+                                    Never touches the calculator, same "investigate, don't auto-apply"
+                                    principle as LiveQuotePanel/LiveStreamPanel
     pages/CalculatorPage.tsx       Composes the page, owns form state; v0.1.11 added the standalone
                                     TSLA LiveQuotePanel instance, always visible above the calculator.
-                                    v0.1.12 added LiveStreamPanel directly below it
+                                    v0.1.12 added LiveStreamPanel directly below it. v0.1.16 added
+                                    HistoricalDataPanel in its own section below the live-data one
     App.tsx, main.tsx, index.css
 scripts/
   dev.sh                          v0.1.5: start/stop/restart/status for backend + frontend together.

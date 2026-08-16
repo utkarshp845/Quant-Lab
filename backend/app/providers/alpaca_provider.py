@@ -24,6 +24,12 @@ Alpaca's own default of "sip" (requires the paid Algo Trader Plus
 plan) -- so this works against a free account out of the box. Pass
 feed="sip" explicitly once/if that plan is active.
 
+get_historical_data() paginates automatically as of v0.1.16 (see its
+docstring): Alpaca returns at most `limit` bars per request and a
+`next_page_token` when more are available -- exactly what an intraday
+timeframe over a real date range needs (a daily-bar request rarely
+needs a second page; a 1-minute request over two weeks does).
+
 Credentials: ALPACA_API_KEY_ID / ALPACA_API_SECRET_KEY, read via
 app.config (the app's one os.environ touchpoint), never hardcoded or
 logged. The HTTP client is injectable (see __init__) specifically so
@@ -41,6 +47,13 @@ from app.providers.base import MarketDataProvider, NormalizedChainResult
 
 DATA_BASE_URL = "https://data.alpaca.markets/v2"
 DEFAULT_FEED = "iex"  # the free tier; "sip" needs a paid subscription
+
+# Safety cap on how many pages get_historical_data() will follow via
+# next_page_token before giving up -- an intraday timeframe (e.g. "1Min")
+# over a wide date range can span many 1000-row pages; this bounds a
+# misbehaving/looping upstream (a next_page_token that never goes null)
+# to a bounded number of requests instead of an unbounded loop.
+_MAX_PAGES = 50
 
 
 def _as_date_param(value: str | date | datetime) -> str:
@@ -89,29 +102,47 @@ class AlpacaProvider(MarketDataProvider):
         feed: str = DEFAULT_FEED,
         limit: int = 1000,
     ) -> list[MarketBar]:
-        data = self._get(
-            f"/stocks/{symbol}/bars",
-            {
+        """Paginates automatically (v0.1.16): a single request only ever
+        returns up to `limit` bars (Alpaca's own per-request cap), and
+        the response's `next_page_token` says whether more are waiting --
+        an intraday timeframe (e.g. "1Min") over even a modest date range
+        can span several such pages. This loops until `next_page_token`
+        comes back null, or `_MAX_PAGES` is hit (see its definition for
+        why that cap exists) -- callers never need to page through this
+        themselves."""
+        bars: list[MarketBar] = []
+        page_token: str | None = None
+        for _ in range(_MAX_PAGES):
+            params = {
                 "timeframe": timeframe,
                 "start": _as_date_param(start),
                 "end": _as_date_param(end),
                 "feed": feed,
                 "limit": limit,
-            },
-        )
-        bars = data.get("bars") or []
-        return [
-            MarketBar(
-                symbol=symbol,
-                timestamp=MarketTimestamp(value=bar["t"], source=self.name),
-                open=bar["o"],
-                high=bar["h"],
-                low=bar["l"],
-                close=bar["c"],
-                volume=bar["v"],
+            }
+            if page_token:
+                params["page_token"] = page_token
+            data = self._get(f"/stocks/{symbol}/bars", params)
+            bars.extend(
+                MarketBar(
+                    symbol=symbol,
+                    timestamp=MarketTimestamp(value=bar["t"], source=self.name),
+                    open=bar["o"],
+                    high=bar["h"],
+                    low=bar["l"],
+                    close=bar["c"],
+                    volume=bar["v"],
+                )
+                for bar in (data.get("bars") or [])
             )
-            for bar in bars
-        ]
+            page_token = data.get("next_page_token")
+            if not page_token:
+                return bars
+        raise RuntimeError(
+            f"AlpacaProvider: get_historical_data({symbol!r}) did not finish paginating after "
+            f"{_MAX_PAGES} pages -- aborting rather than looping indefinitely. Narrow the date "
+            "range or timeframe, or raise _MAX_PAGES if this range is genuinely expected to be this large."
+        )
 
     def get_latest_quote(self, *, symbol: str, feed: str = DEFAULT_FEED) -> Quote:
         quote = self._get(f"/stocks/{symbol}/quotes/latest", {"feed": feed})["quote"]

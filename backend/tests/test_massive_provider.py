@@ -181,6 +181,69 @@ class TestGetHistoricalData:
             provider.get_historical_data(symbol="TSLA", start=date(2026, 8, 1), end=date(2026, 8, 1))
 
 
+class TestGetHistoricalDataPagination:
+    """v0.1.16: get_historical_data() follows next_url until it's absent,
+    rather than silently returning only the first page -- an intraday
+    timeframe over a real date range can span several pages."""
+
+    def test_follows_next_url_until_exhausted(self):
+        bar_1 = dict(TSLA_BARS_MS[0], v=100)
+        bar_2 = dict(TSLA_BARS_MS[1], v=200)
+        bar_3 = {"t": 1786507200000, "o": 250.0, "h": 252.0, "l": 249.0, "c": 251.0, "v": 300}
+        next_url_1 = "https://api.massive.com/v2/aggs/ticker/TSLA/range/1/day/2026-08-10/2026-08-12?cursor=page2"
+        next_url_2 = "https://api.massive.com/v2/aggs/ticker/TSLA/range/1/day/2026-08-10/2026-08-12?cursor=page3"
+        responses = {
+            "/v2/aggs/ticker/TSLA/range/1/day/2026-08-10/2026-08-12": httpx.Response(
+                200, json={"results": [bar_1], "next_url": next_url_1, "status": "OK"}
+            ),
+            next_url_1: httpx.Response(200, json={"results": [bar_2], "next_url": next_url_2, "status": "OK"}),
+            next_url_2: httpx.Response(200, json={"results": [bar_3], "status": "OK"}),
+        }
+        seen_urls = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            url = str(request.url)
+            seen_urls.append(url)
+            key = url if url in responses else request.url.path
+            return responses[key]
+
+        provider = _make_provider(handler)
+        bars = provider.get_historical_data(symbol="TSLA", start=date(2026, 8, 10), end=date(2026, 8, 12))
+
+        assert [b.volume for b in bars] == [100, 200, 300]
+        assert seen_urls == [
+            "https://api.massive.com/v2/aggs/ticker/TSLA/range/1/day/2026-08-10/2026-08-12?adjusted=true&sort=asc&limit=5000",
+            next_url_1,
+            next_url_2,
+        ]
+
+    def test_a_single_page_response_makes_exactly_one_request(self):
+        request_count = 0
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            nonlocal request_count
+            request_count += 1
+            return _bars_response("TSLA", TSLA_BARS_MS)
+
+        provider = _make_provider(handler)
+        provider.get_historical_data(symbol="TSLA", start=date(2026, 8, 10), end=date(2026, 8, 11))
+
+        assert request_count == 1
+
+    def test_exceeding_max_pages_raises_instead_of_looping_forever(self):
+        def handler(request: httpx.Request) -> httpx.Response:
+            # Always claims there's another page -- simulates a
+            # misbehaving upstream that never actually exhausts.
+            return httpx.Response(
+                200,
+                json={"results": [], "next_url": "https://api.massive.com/v2/aggs/ticker/TSLA/x?cursor=loop", "status": "OK"},
+            )
+
+        provider = _make_provider(handler)
+        with pytest.raises(RuntimeError, match="did not finish paginating"):
+            provider.get_historical_data(symbol="TSLA", start=date(2026, 8, 1), end=date(2026, 8, 1))
+
+
 class TestPlanEntitlement403:
     """Confirmed against a real account: bars work on the free plan,
     but /v2/last/nbbo and /v2/last/trade return 403 NOT_AUTHORIZED on
