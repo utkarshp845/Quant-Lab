@@ -29,6 +29,18 @@ Two easy-to-get-wrong details, confirmed rather than assumed:
   - Last-quote's bid/ask are case-sensitive: lowercase "p" is BID,
     uppercase "P" is ASK. Easy to transpose; there's a test locking
     this in (test_massive_provider.py::test_bid_is_lowercase_p_ask_is_uppercase_p).
+  - A bar's "v" (volume) can come back as a float with a fractional
+    part (e.g. 27820813.411849), confirmed against a real account --
+    not the clean integer Alpaca returns. Rounded, not truncated, when
+    building MarketBar (see get_historical_data) -- truncation would
+    systematically undercount every bar.
+
+Confirmed against a real account: get_historical_data() works on
+Massive's free plan; get_latest_quote() (both /v2/last/nbbo and
+/v2/last/trade) returns 403 NOT_AUTHORIZED on the free plan --
+real-time quotes need a paid plan. _get() turns that into a clear
+RuntimeError naming which capability needs upgrading, rather than
+letting a bare httpx.HTTPStatusError surface.
 
 Auth: "Authorization: Bearer <MASSIVE_API_KEY>" (confirmed via the
 official client-python repo's request trace, not the docs prose, which
@@ -130,7 +142,15 @@ class MassiveProvider(MarketDataProvider):
                 high=bar["h"],
                 low=bar["l"],
                 close=bar["c"],
-                volume=bar["v"],
+                # Confirmed against a real account: Massive's "v" can come
+                # back as a float with a fractional part (e.g.
+                # 27820813.411849), not the clean integer Alpaca returns.
+                # MarketBar.volume is (correctly) an int -- a share count
+                # is conceptually whole -- so this provider rounds rather
+                # than relaxing the shared model's type for one source's
+                # quirk. round() over int() specifically: truncating would
+                # systematically undercount every bar by up to ~1 share.
+                volume=round(bar["v"]),
             )
             for bar in results
         ]
@@ -160,5 +180,22 @@ class MassiveProvider(MarketDataProvider):
             params=params,
             headers={"Authorization": f"Bearer {self.api_key}"},
         )
+        if response.status_code == 403:
+            # Confirmed against a real account: historical bars
+            # (/v2/aggs/...) work on the free plan, but /v2/last/nbbo
+            # and /v2/last/trade come back 403 with a
+            # {"status": "NOT_AUTHORIZED", "message": "..."} body --
+            # a plan-entitlement gap, not a bug in this provider. Raise
+            # something a caller can actually act on instead of a bare
+            # httpx.HTTPStatusError.
+            try:
+                detail = response.json().get("message")
+            except ValueError:
+                detail = None
+            message = f"MassiveProvider: not entitled to {path} on your current Massive plan"
+            if detail:
+                message += f" -- {detail}"
+            message += ". Historical bars (get_historical_data) work on the free plan; " "real-time quotes (get_latest_quote) do not."
+            raise RuntimeError(message) from None
         response.raise_for_status()
         return response.json()
