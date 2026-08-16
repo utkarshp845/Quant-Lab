@@ -374,6 +374,75 @@ body {
   color: var(--color-text-muted);
 }
 
+/* ---------- Live quote panel (Alpaca/Massive/Schwab, v0.1.9) ---------- */
+
+.live-quote-panel {
+  margin-bottom: 14px;
+}
+
+.live-quote-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.live-quote-label {
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: var(--color-text-muted);
+}
+
+.live-quote-controls select {
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  padding: 5px 8px;
+  font-size: 0.85rem;
+}
+
+.live-quote-btn {
+  background: var(--color-accent);
+  color: white;
+  border: none;
+  border-radius: 8px;
+  padding: 7px 14px;
+  font-size: 0.85rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.live-quote-btn:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.live-quote-error {
+  background: var(--color-loss-bg);
+  border: 1px solid #f3b4b4;
+  color: var(--color-loss);
+  border-radius: 8px;
+  padding: 8px 12px;
+  font-size: 0.84rem;
+  margin-top: 8px;
+}
+
+.live-quote-result {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 16px;
+  margin-top: 8px;
+  padding: 8px 12px;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  font-size: 0.86rem;
+}
+
+.live-quote-source {
+  font-size: 0.78rem;
+  color: var(--color-text-muted);
+}
+
 /* ---------- Spread Builder preview card ---------- */
 
 .spread-builder-card {

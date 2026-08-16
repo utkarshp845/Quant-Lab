@@ -2,6 +2,7 @@ import { useMemo, useState } from "react";
 import { ApiError, importCsv } from "../api/client";
 import type { CsvImportResponse, NormalizedOption } from "../types/csvImport";
 import type { BearPutSpreadFormState } from "../types/form";
+import { LiveQuotePanel } from "./LiveQuotePanel";
 import { OptionChainTable } from "./OptionChainTable";
 import { SpreadBuilderPreview } from "./SpreadBuilderPreview";
 import { SpreadScanner } from "./SpreadScanner";
@@ -204,11 +205,14 @@ export function CsvImportWorkflow({ onApply }: CsvImportWorkflowProps) {
           )}
 
           {browseMode === "chain" && contextInfo && (
-            <div className="chain-context-header">
-              <span className="chain-context-symbol">{contextInfo.symbol}</span>
-              <span className="chain-context-price">{fmtUsd(contextInfo.underlying_price)}</span>
-              <span className="chain-context-dte">{contextInfo.dte} DTE</span>
-            </div>
+            <>
+              <div className="chain-context-header">
+                <span className="chain-context-symbol">{contextInfo.symbol}</span>
+                <span className="chain-context-price">{fmtUsd(contextInfo.underlying_price)}</span>
+                <span className="chain-context-dte">{contextInfo.dte} DTE</span>
+              </div>
+              <LiveQuotePanel symbol={contextInfo.symbol} csvUnderlyingPrice={contextInfo.underlying_price} />
+            </>
           )}
 
           {browseMode === "chain" && contractsForExpiration.length > 0 && (
