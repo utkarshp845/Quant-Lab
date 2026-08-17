@@ -6,7 +6,7 @@
       "runtimeExecutable": "bash",
       "runtimeArgs": [
         "-c",
-        "cd backend && /Users/utkarshp845/Pandey-Quant-Lab/backend/venv/bin/uvicorn app.main:app --port 8000"
+        "cd backend && set -a && source /Users/utkarshp845/Pandey-Quant-Lab/backend/.env && set +a && /Users/utkarshp845/Pandey-Quant-Lab/backend/venv/bin/uvicorn app.main:app --port 8000"
       ],
       "port": 8000
     },

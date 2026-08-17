@@ -22,6 +22,78 @@ design decision, and what it explicitly did NOT do if that matters.
 
 ---
 
+## v0.1.23 — Auto-ingest failure escalation + real-data verification (2026-08-17)
+
+Two things, both closing gaps a real end-to-end run (not just tests)
+surfaced. First: verified the full pipeline against a real Alpaca
+account for the first time ever -- 2 years of daily + ~60 days of 5m
+bars backfilled (v0.1.22's script) into both this worktree's and the
+main checkout's databases, and the real-time WebSocket relay
+(v0.1.12/13) confirmed actually streaming live TSLA quotes into the UI
+(price/bid/ask/volume/timestamp all changing between two screenshots
+8 seconds apart). No code changed for this half -- it was already
+built, just never exercised against a real account before.
+
+Second: a real gap in `app/ingestion/auto_ingest.py` this exposed --
+before now, a pair failing forever (a stale credential, not a
+transient blip) logged at the exact same WARNING level, cycle after
+cycle, as a five-minute network hiccup, with nothing distinguishing
+"ignore this" from "this has been broken for two days." Added
+`PairFailureTracker`: loop-level state (deliberately NOT inside the
+still-stateless `run_ingestion_cycle()`) that watches consecutive
+failures per symbol/timeframe pair and escalates to one ERROR log line
+once `AUTO_INGEST_FAILURE_ALERT_THRESHOLD` (default 3) consecutive
+cycles have failed, then logs one INFO "recovered" line the first time
+that pair succeeds again. Also documented, in `.env.example`, that
+`AUTO_INGEST_TIMEFRAMES` needs `5m` added explicitly if intraday data
+just backfilled should actually stay current -- auto-ingest only
+refreshes whichever timeframes are listed, and the default is `1d`
+only.
+
+**Files:** `app/ingestion/auto_ingest.py` (`PairFailureTracker`,
+wired into `run_ingestion_loop`), `app/config.py`
+(`get_auto_ingest_failure_alert_threshold`), `.env.example`.
+**Tests:** `tests/test_auto_ingest.py` — 8 new tests (14 total in that
+file): threshold-crossing escalation (exactly one ERROR, not one per
+failure past it), continued failure re-alerting every cycle,
+below-threshold and reset-before-threshold silence, recovery-after-
+escalation logging exactly one INFO line, no recovery line when never
+escalated, independent tracking per pair, and one end-to-end test
+through the real async loop. Full suite: 672 passed.
+
+## v0.1.22 — Historical backfill script (2026-08-17)
+
+Closed the actual reason this project's data was low-to-nonexistent:
+nothing had ever bulk-loaded it. `app/ingestion/auto_ingest.py` (the
+one existing unattended pulling mechanism) is built to *stay fresh* --
+a small trailing window re-fetched on a timer -- not to backfill years
+of history in one run, and it was off by default with no credentials
+configured anywhere. Added a real, deep backfill path instead of
+stretching auto-ingest to do a job its design doesn't fit:
+`app/ingestion/backfill.py::run_backfill()` splits a wide date range
+into bounded chunks (`_date_chunks()`), reuses the exact same
+`fetch_normalized_bars -> validate_bars -> save_validated_bars`
+pipeline every other ingestion path already uses (no new, could-drift
+way to ask a provider for bars), retries a 429 with exponential
+backoff before giving up on just that chunk, and isolates one chunk's
+failure from the rest of the run the same way auto_ingest isolates one
+pair's. Re-running the same command is always safe -- storage's
+existing `UNIQUE(provider, symbol, timeframe, timestamp)` dedup makes
+an already-saved chunk a fast no-op, so there's no separate "resume
+point" to track. `scripts/backfill_historical_data.py` is the thin,
+untested (like the other manual scripts) CLI wrapper around it.
+Real-time streaming needed no new code at all -- `GET
+/market-data/stream` (v0.1.12/13) was already fully built for Alpaca
+and Massive; it only ever lacked credentials to authenticate with.
+
+**Files:** `app/ingestion/backfill.py` (new), `scripts/backfill_historical_data.py` (new).
+**Tests:** `tests/test_backfill.py` (14 tests) — chunk boundaries (gap-
+free, non-overlapping, single-day/single-chunk edge cases), multi-
+symbol/timeframe coverage, dedup on re-run, quarantine on invalid
+OHLCV, one-chunk-failure isolation, 429 retry-then-succeed and
+retry-exhausted, chunk-completion callback ordering. Full suite: 664
+passed.
+
 ## v0.1.21 — Feature Engine v1 (2026-08-17, PR #23)
 
 A deterministic feature-computation layer on top of `historical_bars`:

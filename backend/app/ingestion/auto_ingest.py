@@ -35,6 +35,22 @@ rest of the cycle or killing the loop -- see run_ingestion_cycle()'s
 per-pair try/except. There is no retry-with-backoff here: the next
 scheduled cycle IS this module's retry, which is enough for a periodic
 poller and simpler than a second, parallel retry mechanism.
+
+v0.1.23: a single failing cycle logs at WARNING, same as always -- but
+run_ingestion_loop() now also feeds every cycle's results through
+PairFailureTracker, which watches for a pair failing several cycles IN
+A ROW (config.get_auto_ingest_failure_alert_threshold(), default 3 --
+see that function's docstring for why cycle count, not a timer). A
+pair that crosses the threshold escalates to a single ERROR log line
+and stays flagged until it succeeds again, at which point one INFO
+"recovered" line fires -- the gap this closes: before this, a genuinely
+stale credential (an expired Schwab refresh token, a revoked key) would
+fail forever at the exact same WARNING level as a five-minute network
+blip, with nothing in the log distinguishing "ignore this" from "this
+has been broken for two days." run_ingestion_cycle() itself stays
+completely stateless (a fresh PairResult every call) -- the tracker is
+loop-level state, deliberately, so testing one cycle in isolation still
+needs no memory of any other.
 """
 
 import asyncio
@@ -73,6 +89,54 @@ class PairResult:
 class IngestionCycleResult:
     provider: str
     results: list[PairResult] = field(default_factory=list)
+
+
+class PairFailureTracker:
+    """Watches consecutive-failure streaks per (symbol, timeframe) pair
+    ACROSS cycles -- see the module docstring's v0.1.23 note for why
+    this lives here rather than inside the (deliberately stateless)
+    run_ingestion_cycle(). Lives for the lifetime of one
+    run_ingestion_loop() call; a fresh tracker (fresh counts) starts
+    with each new loop, which is the right behavior -- a process
+    restart is itself a reasonable point to give a previously-escalated
+    pair a clean slate rather than carry alarm state across it.
+
+    A pair recovering after having escalated logs one INFO "recovered"
+    line -- so "it's fixed" is exactly as visible in the log as "it
+    broke" was, not just an ERROR line that quietly stops reappearing.
+    """
+
+    def __init__(self, *, alert_threshold: int):
+        self.alert_threshold = alert_threshold
+        self._consecutive_failures: dict[tuple[str, str], int] = {}
+        self._escalated: set[tuple[str, str]] = set()
+
+    def record(self, result: PairResult) -> None:
+        key = (result.symbol, result.timeframe)
+
+        if result.error is None:
+            if key in self._escalated:
+                logger.info(
+                    "auto-ingest %s/%s recovered after %d consecutive failed cycle(s)",
+                    result.symbol,
+                    result.timeframe,
+                    self._consecutive_failures.get(key, 0),
+                )
+            self._consecutive_failures.pop(key, None)
+            self._escalated.discard(key)
+            return
+
+        count = self._consecutive_failures.get(key, 0) + 1
+        self._consecutive_failures[key] = count
+        if count >= self.alert_threshold:
+            self._escalated.add(key)
+            logger.error(
+                "auto-ingest %s/%s has failed %d consecutive cycles, latest error: %s",
+                result.symbol,
+                result.timeframe,
+                count,
+                result.error,
+            )
 
 
 def run_ingestion_cycle() -> IngestionCycleResult:
@@ -158,19 +222,29 @@ async def run_ingestion_loop(*, stop_event: asyncio.Event) -> None:
     while a provider call is in flight, the same reason
     app/storage/db.py opens a short-lived connection per call rather
     than holding one open.
+
+    v0.1.23: every cycle's results also feed a PairFailureTracker (see
+    its docstring), so a pair that fails several cycles in a row -- as
+    opposed to one isolated blip -- escalates to an ERROR log line
+    instead of blending into routine per-cycle WARNINGs forever.
     """
     interval = config.get_auto_ingest_interval_seconds()
+    failure_tracker = PairFailureTracker(alert_threshold=config.get_auto_ingest_failure_alert_threshold())
     logger.info(
-        "auto-ingest loop starting: provider=%s symbols=%s timeframes=%s interval=%ds lookback=%dd",
+        "auto-ingest loop starting: provider=%s symbols=%s timeframes=%s interval=%ds lookback=%dd "
+        "failure_alert_threshold=%d",
         config.get_auto_ingest_provider(),
         config.get_auto_ingest_symbols(),
         config.get_auto_ingest_timeframes(),
         interval,
         config.get_auto_ingest_lookback_days(),
+        failure_tracker.alert_threshold,
     )
     while not stop_event.is_set():
         try:
-            await asyncio.to_thread(run_ingestion_cycle)
+            cycle = await asyncio.to_thread(run_ingestion_cycle)
+            for result in cycle.results:
+                failure_tracker.record(result)
         except Exception:  # noqa: BLE001 -- run_ingestion_cycle() already isolates every per-pair error; this is a last-resort net so the LOOP itself survives something it didn't anticipate.
             logger.exception("auto-ingest cycle raised unexpectedly")
 

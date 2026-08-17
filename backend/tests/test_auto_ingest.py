@@ -192,3 +192,109 @@ class TestRunIngestionLoop:
         assert call_count == 1
         stored = get_bars(symbol="TSLA", timeframe="1d", provider="alpaca", start=today, end=today)
         assert len(stored) == 1
+
+
+class TestPairFailureTracker:
+    """Direct unit tests of the tracker (v0.1.23), independent of the
+    async loop -- feed it PairResult objects by hand and assert on the
+    log records it produces via caplog, the same "one small piece of
+    real logic, tested on its own" split the rest of this module uses."""
+
+    def _result(self, *, error: str | None) -> "auto_ingest.PairResult":
+        return auto_ingest.PairResult(symbol="TSLA", timeframe="1d", fetched=1, inserted=1, error=error)
+
+    def test_a_single_failure_below_threshold_does_not_escalate(self, caplog):
+        tracker = auto_ingest.PairFailureTracker(alert_threshold=3)
+        with caplog.at_level("WARNING", logger="app.ingestion.auto_ingest"):
+            tracker.record(self._result(error="boom"))
+        assert not any(r.levelname == "ERROR" for r in caplog.records)
+
+    def test_reaching_the_threshold_logs_exactly_one_error(self, caplog):
+        tracker = auto_ingest.PairFailureTracker(alert_threshold=3)
+        with caplog.at_level("WARNING", logger="app.ingestion.auto_ingest"):
+            tracker.record(self._result(error="boom"))
+            tracker.record(self._result(error="boom"))
+            tracker.record(self._result(error="boom"))
+        errors = [r for r in caplog.records if r.levelname == "ERROR"]
+        assert len(errors) == 1
+        assert "TSLA/1d" in errors[0].message
+        assert "3 consecutive" in errors[0].message
+
+    def test_continuing_to_fail_past_the_threshold_logs_another_error_each_cycle(self, caplog):
+        tracker = auto_ingest.PairFailureTracker(alert_threshold=2)
+        with caplog.at_level("WARNING", logger="app.ingestion.auto_ingest"):
+            for _ in range(4):
+                tracker.record(self._result(error="boom"))
+        errors = [r for r in caplog.records if r.levelname == "ERROR"]
+        assert len(errors) == 3  # cycles 2, 3, 4 -- every cycle once the threshold is crossed
+
+    def test_a_success_before_reaching_threshold_resets_the_count_silently(self, caplog):
+        tracker = auto_ingest.PairFailureTracker(alert_threshold=3)
+        with caplog.at_level("INFO", logger="app.ingestion.auto_ingest"):
+            tracker.record(self._result(error="boom"))
+            tracker.record(self._result(error="boom"))
+            tracker.record(self._result(error=None))  # recovers before hitting 3
+            tracker.record(self._result(error="boom"))
+            tracker.record(self._result(error="boom"))
+        # never reached 3 consecutive failures in a row, and never escalated -- no recovery line either
+        assert not any(r.levelname in ("ERROR", "INFO") for r in caplog.records)
+
+    def test_recovering_after_escalation_logs_one_info_recovery_line(self, caplog):
+        tracker = auto_ingest.PairFailureTracker(alert_threshold=2)
+        with caplog.at_level("INFO", logger="app.ingestion.auto_ingest"):
+            tracker.record(self._result(error="boom"))
+            tracker.record(self._result(error="boom"))  # escalates here
+            tracker.record(self._result(error=None))  # recovers
+        recoveries = [r for r in caplog.records if r.levelname == "INFO" and "recovered" in r.message]
+        assert len(recoveries) == 1
+        assert "TSLA/1d" in recoveries[0].message
+
+    def test_recovering_without_ever_escalating_logs_nothing(self, caplog):
+        tracker = auto_ingest.PairFailureTracker(alert_threshold=5)
+        with caplog.at_level("INFO", logger="app.ingestion.auto_ingest"):
+            tracker.record(self._result(error="boom"))
+            tracker.record(self._result(error=None))
+        assert not any(r.levelname == "INFO" and "recovered" in r.message for r in caplog.records)
+
+    def test_different_pairs_are_tracked_independently(self, caplog):
+        tracker = auto_ingest.PairFailureTracker(alert_threshold=2)
+        tsla = auto_ingest.PairResult(symbol="TSLA", timeframe="1d", error="boom")
+        nvda = auto_ingest.PairResult(symbol="NVDA", timeframe="1d", error=None)
+        with caplog.at_level("WARNING", logger="app.ingestion.auto_ingest"):
+            tracker.record(tsla)
+            tracker.record(nvda)
+            tracker.record(tsla)  # TSLA's second consecutive failure -- escalates
+            tracker.record(nvda)  # NVDA never failed at all -- no effect
+        errors = [r for r in caplog.records if r.levelname == "ERROR"]
+        assert len(errors) == 1
+        assert "TSLA/1d" in errors[0].message
+
+
+class TestRunIngestionLoopFailureEscalation:
+    def test_a_pair_failing_past_the_threshold_across_real_cycles_escalates(self, monkeypatch, caplog):
+        """End-to-end through the actual async loop (not the tracker in
+        isolation): a provider that always raises, polled on a fast
+        interval, must produce an ERROR log line once
+        AUTO_INGEST_FAILURE_ALERT_THRESHOLD consecutive cycles have
+        failed."""
+
+        def broken_provider(name):
+            raise RuntimeError("simulated persistent credential failure")
+
+        monkeypatch.setattr(historical_data_module, "get_provider", broken_provider)
+        monkeypatch.setenv("AUTO_INGEST_INTERVAL_SECONDS", "0")
+        monkeypatch.setenv("AUTO_INGEST_FAILURE_ALERT_THRESHOLD", "3")
+
+        async def run():
+            stop_event = asyncio.Event()
+            task = asyncio.create_task(auto_ingest.run_ingestion_loop(stop_event=stop_event))
+            await asyncio.sleep(0.3)  # several fast cycles
+            stop_event.set()
+            await asyncio.wait_for(task, timeout=5)
+
+        with caplog.at_level("WARNING", logger="app.ingestion.auto_ingest"):
+            asyncio.run(run())
+
+        errors = [r for r in caplog.records if r.levelname == "ERROR"]
+        assert len(errors) >= 1
+        assert "TSLA/1d" in errors[0].message
