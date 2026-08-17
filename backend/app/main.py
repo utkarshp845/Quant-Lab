@@ -7,12 +7,15 @@ app/api/market_data_stream.py), (v0.1.17) persisted storage for
 fetched historical bars (a local SQLite file, app/storage/), and
 (v0.1.18) an unattended auto-ingestion loop that keeps that storage
 growing without a human clicking "Save to Database" every time (see
-app/ingestion/auto_ingest.py), and (Research v1, v0.1.20) a hypothesis-
+app/ingestion/auto_ingest.py), (Research v1, v0.1.20) a hypothesis-
 testing engine that searches the normalized historical dataset for
 every occurrence of a condition and measures its outcome (see
-app/research/, app/api/research.py) -- layered on top -- no brokerage
-connectivity, no trade execution, no auth. See the README for the full
-list of assumptions and what is intentionally not implemented yet.
+app/research/, app/api/research.py), and (Feature Engine v1, v0.1.21) a
+deterministic feature-computation layer that transforms normalized
+bars into timestamped feature records for research (see app/features/,
+app/api/features.py) -- layered on top -- no brokerage connectivity, no
+trade execution, no auth. See the README for the full list of
+assumptions and what is intentionally not implemented yet.
 """
 
 import asyncio
@@ -28,6 +31,7 @@ from app.api.csv_import import router as csv_import_router
 from app.api.historical_comparison import router as historical_comparison_router
 from app.api.historical_data import router as historical_data_router
 from app.api.historical_storage import router as historical_storage_router
+from app.api.features import router as features_router
 from app.api.market_data import router as market_data_router
 from app.api.market_data_stream import router as market_data_stream_router
 from app.api.research import router as research_router
@@ -95,6 +99,7 @@ app.include_router(historical_data_router, prefix="/api")
 app.include_router(historical_comparison_router, prefix="/api")
 app.include_router(historical_storage_router, prefix="/api")
 app.include_router(research_router, prefix="/api")
+app.include_router(features_router, prefix="/api")
 
 
 @app.get("/api/health")
