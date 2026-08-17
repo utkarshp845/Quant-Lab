@@ -4,6 +4,12 @@ most important test. Mocks the provider layer (via
 app.api.historical_data.get_provider, which the route calls through
 fetch_normalized_bars) exactly like test_historical_data_api.py, plus
 an UploadFile for the CSV side.
+
+v0.1.19: this route also persists the uploaded CSV's raw text (see
+app/storage/raw_ingestion_repository.py) before parsing it --
+isolated_db below points DATABASE_PATH at a throwaway tmp_path file for
+every test here, same as tests/test_historical_storage_api.py, so this
+file never writes into a developer's real backend/data/historical_bars.db.
 """
 
 import io
@@ -17,6 +23,11 @@ from app.main import app
 from app.models.market_data import MarketBar, MarketTimestamp
 
 client = TestClient(app)
+
+
+@pytest.fixture(autouse=True)
+def isolated_db(tmp_path, monkeypatch):
+    monkeypatch.setenv("DATABASE_PATH", str(tmp_path / "test_historical_comparison.db"))
 
 
 def _bar(symbol, ts, open_, high, low, close, volume) -> MarketBar:

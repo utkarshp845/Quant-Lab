@@ -30,6 +30,15 @@ docstring): Alpaca returns at most `limit` bars per request and a
 timeframe over a real date range needs (a daily-bar request rarely
 needs a second page; a 1-minute request over two weeks does).
 
+v0.1.19: get_historical_data() also persists every raw page it
+receives, via app.storage.raw_ingestion_repository, BEFORE building any
+MarketBar from it -- see that module's docstring. This is the only
+method that does so (not get_chain()/get_latest_quote(), which nothing
+downstream needs a raw-audit trail for yet); persisting failures are
+swallowed there, never here, so this provider's actual job -- fetching
+and parsing bars -- is completely unaffected by whether raw storage
+succeeds.
+
 Credentials: ALPACA_API_KEY_ID / ALPACA_API_SECRET_KEY, read via
 app.config (the app's one os.environ touchpoint), never hardcoded or
 logged. The HTTP client is injectable (see __init__) specifically so
@@ -37,6 +46,7 @@ tests can supply a mocked transport instead of making real network
 calls with real credentials -- see tests/test_alpaca_provider.py.
 """
 
+import json
 from datetime import date, datetime
 
 import httpx
@@ -44,6 +54,7 @@ import httpx
 from app import config
 from app.models.market_data import MarketBar, MarketTimestamp, Quote
 from app.providers.base import MarketDataProvider, NormalizedChainResult
+from app.storage.raw_ingestion_repository import persist_raw_ingestion_safely
 
 DATA_BASE_URL = "https://data.alpaca.markets/v2"
 DEFAULT_FEED = "iex"  # the free tier; "sip" needs a paid subscription
@@ -111,6 +122,7 @@ class AlpacaProvider(MarketDataProvider):
         why that cap exists) -- callers never need to page through this
         themselves."""
         bars: list[MarketBar] = []
+        raw_pages: list[dict] = []
         page_token: str | None = None
         for _ in range(_MAX_PAGES):
             params = {
@@ -123,6 +135,7 @@ class AlpacaProvider(MarketDataProvider):
             if page_token:
                 params["page_token"] = page_token
             data = self._get(f"/stocks/{symbol}/bars", params)
+            raw_pages.append(data)  # v0.1.19: the untouched response, before any of the parsing below
             bars.extend(
                 MarketBar(
                     symbol=symbol,
@@ -137,6 +150,16 @@ class AlpacaProvider(MarketDataProvider):
             )
             page_token = data.get("next_page_token")
             if not page_token:
+                persist_raw_ingestion_safely(
+                    source=self.name,
+                    symbol=symbol,
+                    timeframe=timeframe,
+                    source_start=start,
+                    source_end=end,
+                    raw_payload=json.dumps(raw_pages),
+                    content_type="json",
+                    metadata={"page_count": len(raw_pages), "feed": feed},
+                )
                 return bars
         raise RuntimeError(
             f"AlpacaProvider: get_historical_data({symbol!r}) did not finish paginating after "

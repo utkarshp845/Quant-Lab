@@ -47,6 +47,12 @@ docstring): a response can include a `next_url` when more bars exist
 beyond one request's `limit` -- exactly what an intraday timeframe over
 a real date range needs.
 
+v0.1.19: get_historical_data() also persists every raw page it
+receives, via app.storage.raw_ingestion_repository, BEFORE building any
+MarketBar from it -- see that module's docstring and
+alpaca_provider.py's identical addition. Persisting failures are
+swallowed there, never here.
+
 Auth: "Authorization: Bearer <MASSIVE_API_KEY>" (confirmed via the
 official client-python repo's request trace, not the docs prose, which
 didn't state it explicitly -- see this provider's design-discussion
@@ -69,6 +75,7 @@ convention (see app/config.py), which is why this file follows it --
 not because a fetched webpage said to.
 """
 
+import json
 from datetime import date, datetime, timezone
 
 import httpx
@@ -76,6 +83,7 @@ import httpx
 from app import config
 from app.models.market_data import MarketBar, MarketTimestamp, Quote
 from app.providers.base import MarketDataProvider, NormalizedChainResult
+from app.storage.raw_ingestion_repository import persist_raw_ingestion_safely
 
 DATA_BASE_URL = "https://api.massive.com"
 
@@ -154,6 +162,7 @@ class MassiveProvider(MarketDataProvider):
         )
         params = {"adjusted": "true", "sort": "asc", "limit": limit}
         bars: list[MarketBar] = []
+        raw_pages: list[dict] = []
         next_url: str | None = None
         for _ in range(_MAX_PAGES):
             # next_url is a fully-qualified URL (cursor + original query
@@ -165,6 +174,7 @@ class MassiveProvider(MarketDataProvider):
             # forever. Confirmed the hard way: see
             # tests/test_massive_provider.py::TestGetHistoricalDataPagination.
             data = self._get(next_url or path, None if next_url else params)
+            raw_pages.append(data)  # v0.1.19: the untouched response, before any of the parsing below
             results = data.get("results") or []
             bars.extend(
                 MarketBar(
@@ -188,6 +198,16 @@ class MassiveProvider(MarketDataProvider):
             )
             next_url = data.get("next_url")
             if not next_url:
+                persist_raw_ingestion_safely(
+                    source=self.name,
+                    symbol=symbol,
+                    timeframe=timespan,
+                    source_start=start,
+                    source_end=end,
+                    raw_payload=json.dumps(raw_pages),
+                    content_type="json",
+                    metadata={"page_count": len(raw_pages), "multiplier": multiplier},
+                )
                 return bars
         raise RuntimeError(
             f"MassiveProvider: get_historical_data({symbol!r}) did not finish paginating after "

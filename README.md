@@ -74,6 +74,12 @@ spreadsheet — but with every step shown, not hidden behind a single
   bars on an unattended schedule** instead of requiring a manual "Save
   to Database" click, opt-in via `AUTO_INGEST_ENABLED`. See
   [17. Bar validation, quarantine, and auto-ingestion](#17-bar-validation-quarantine-and-auto-ingestion-v0118).
+- **(v0.1.19) Persists the original provider/CSV payload before any
+  parsing touches it** — a `raw_ingestions` audit table, independent of
+  the normalized/quarantined tables, so "what did the provider/file
+  literally give us" is always answerable, even for a record that later
+  failed validation. See
+  [18. Raw-ingestion storage](#18-raw-ingestion-storage-v0119).
 
 ## 3. How to install dependencies
 
@@ -1576,6 +1582,131 @@ network call. `tests/test_historical_storage_api.py` and
 quarantine wiring on the manual-save path; `save_bars()` itself is
 unchanged and still exercised exactly as it was in v0.1.17.
 
+## 18. Raw-ingestion storage (v0.1.19)
+
+A verification pass against the shipped v0.1.18 pipeline (see
+`tests/test_pipeline_end_to_end.py`) found one real architectural gap:
+normalization happened *inside* ingestion — `AlpacaProvider`/
+`MassiveProvider.get_historical_data()` and `ohlcv_csv.parse_ohlcv_csv()`
+both produced the canonical `HistoricalBar` shape directly — so the
+original provider JSON / CSV text was parsed and discarded, never
+persisted anywhere. v0.1.19 closes that gap with a new raw-storage
+stage, added on top of the existing pipeline without changing it:
+
+```
+Alpaca / Massive / CSV upload
+        |
+        v
+  persist_raw_ingestion_safely()   <- NEW (app/storage/raw_ingestion_repository.py)
+        |                             never raises -- a storage failure here
+        v                             can't break a fetch that would have worked
+  existing parsing (unchanged)
+        |
+        v
+  validate_bars()                  <- UNCHANGED (app/ingestion/bar_validation.py)
+   /                \
+  save_validated_bars()      save_rejected_bars()   <- UNCHANGED
+  -> historical_bars          -> quarantined_bars
+```
+
+**Where raw data is stored:** a new `raw_ingestions` table (`app/storage/db.py`),
+one row per ingestion *request* — one provider fetch call, or one CSV
+upload — not one row per bar. Columns: `batch_id` (an opaque UUID
+correlating a row to the request that produced it), `source`
+(`alpaca`/`massive`/`csv`), `symbol`, `timeframe` (the *source's own*
+vocabulary — Alpaca's `"1Day"`, Massive's `"day"`, not this app's
+normalized `"1d"` — see the schema comment for why), `source_start`/
+`source_end`, `ingested_at`, `content_type` (`json`/`csv`), `raw_payload`
+(the untouched response/file text), and `metadata` (a small JSON blob,
+e.g. page count). No `UNIQUE` constraint — like `quarantined_bars`,
+this is an append-only log: re-fetching an overlapping window (e.g.
+`auto_ingest.py`'s lookback) legitimately produces a second raw row for
+a real second request, not a duplicate to collapse away. Deliberately
+**not** shaped like `historical_bars`: forcing Alpaca's `o`/`h`/`l`/`c`/`v`
+or a CSV's original headers into this app's OHLCV columns would defeat
+the entire point of a raw stage, which is preserving the source's own
+representation, unparsed.
+
+**Where normalized data is stored:** unchanged from v0.1.17/18 —
+`historical_bars` (valid/flagged) and `quarantined_bars` (rejected), via
+`app/storage/historical_bar_repository.py`, which this change does not
+touch at all.
+
+**How raw data moves into the existing pipeline:** captured at the two
+places the *original* payload actually exists, before anything parses
+it:
+- `AlpacaProvider`/`MassiveProvider.get_historical_data()` accumulate
+  every raw HTTP page during pagination and persist them as one row
+  right before returning parsed `MarketBar`s. One hook point, and every
+  caller of `get_historical_data()` — the real `GET .../history` route,
+  the CSV-comparison route's live side, and `auto_ingest.py`'s polling
+  loop — gets raw capture automatically, with **zero changes needed to
+  any of them**.
+- `app/api/historical_comparison.py` persists the uploaded CSV's raw
+  text right after decoding it, before `parse_ohlcv_csv()` touches it —
+  the one production route that receives raw CSV content today (see
+  section 17 for why no route yet connects parsed CSV bars to
+  `historical_bars` — that gap is unchanged by this work).
+
+Every real call site goes through `persist_raw_ingestion_safely()`, not
+the underlying `save_raw_ingestion()` directly: it catches and logs any
+failure instead of raising, so a full disk or a locked file can never
+turn a fetch/upload that would have succeeded into one that fails.
+
+**How to retrieve raw data for auditing/reprocessing:**
+`app.storage.raw_ingestion_repository.get_raw_ingestions(source=...,
+symbol=...)` returns every raw row for a source (optionally narrowed to
+a symbol), oldest first — including rows whose bars were later entirely
+quarantined, since raw storage happens *before* validation. No new HTTP
+route was added for this (see "keep it simple" below) — a Python call,
+or a small script in the style of `scripts/alpaca_manual_check.py`, is
+the smallest appropriate way to answer "what did the provider/file
+literally give us when this record failed."
+
+**What did NOT change, on purpose:** `app/ingestion/bar_validation.py`,
+`app/storage/historical_bar_repository.py`'s `save_bars()`/
+`save_validated_bars()`/`save_rejected_bars()`/`get_bars()`/
+`get_quarantined_bars()`, `app/api/historical_storage.py`'s two routes,
+and `app/ingestion/auto_ingest.py` are all byte-for-byte unchanged. No
+new HTTP endpoint, no second normalization system, no research/feature/
+backtesting code. The only new production files are
+`app/storage/raw_ingestion_repository.py` and one new table; the only
+other edits are ~15-line additions to two provider files and one route.
+
+**A real problem this surfaced, fixed as part of this change:** every
+`AlpacaProvider`/`MassiveProvider.get_historical_data()` call now writes
+to the historical-bars SQLite database as a side effect of raw capture.
+`tests/test_alpaca_provider.py`, `tests/test_massive_provider.py`, and
+`tests/test_historical_comparison_api.py` construct real provider
+instances and previously had no reason to isolate `DATABASE_PATH` —
+without a fix, running the test suite would have silently written real
+rows into a developer's actual `backend/data/historical_bars.db`. Each
+of those three files now has the same `isolated_db` autouse fixture
+`tests/test_historical_storage_api.py` already used, pointing
+`DATABASE_PATH` at a throwaway `tmp_path` file per test.
+
+**Tests:** `tests/test_pipeline_end_to_end.py`'s `TestRawStorage` and
+`TestCsvRawStorageThroughTheRealRoute` classes cover: a raw row exists
+per real ingestion request; the payload preserves each source's actual
+field names (Alpaca's `o`/`h`/`l`/`c`/`v` under `"bars"`, Massive's
+under `"results"`, a CSV's own text verbatim) rather than the canonical
+schema; raw and normalized row counts differ (independently stored, not
+mirrors of each other); a bar that was later quarantined is still
+findable in its batch's raw payload; raw capture happens even when CSV
+parsing fails outright (422); and raw storage is deliberately NOT
+deduplicated across repeated real fetches while `historical_bars` stays
+deduplicated regardless. Every pre-existing assertion in this file
+(validation, normalization, historical storage, deduplication,
+idempotency, symbol separation, the `ALLOWED_SYMBOLS` asymmetry
+finding) passes unmodified — the existing pipeline was preserved, not
+rewritten.
+
+**Remaining gap, unaffected by this change:** no production route
+connects parsed CSV bars to `historical_bars` — the CSV-comparison
+route still only diffs, and MCL-style data still has to be pushed
+through `POST /market-data/history/save` directly, as documented in
+section 17.
+
 ---
 
 ## Project structure
@@ -1652,12 +1783,15 @@ backend/
       alpaca_provider.py           v0.1.4: real get_historical_data/get_latest_quote (equity bars/
                                     quotes, Alpaca Market Data API v2); get_chain (options) still a stub.
                                     v0.1.16: get_historical_data() paginates via next_page_token instead
-                                    of silently returning only the first page
+                                    of silently returning only the first page.
+                                    v0.1.19: get_historical_data() also persists every raw page via
+                                    persist_raw_ingestion_safely() before parsing it -- see section 18
       massive_provider.py          v0.1.6: real get_historical_data/get_latest_quote (equity bars/
                                     quotes, Massive/Polygon.io REST API); get_chain (options) still a stub.
                                     v0.1.16: get_historical_data() paginates via next_url -- caught a real
                                     bug along the way (httpx params={} silently strips an existing URL's
-                                    query string; fixed with params=None) -- see README section 15
+                                    query string; fixed with params=None) -- see README section 15.
+                                    v0.1.19: same raw-persist addition as alpaca_provider.py -- see section 18
       schwab_provider.py           v0.1.8: real get_historical_data/get_latest_quote (equity bars/
                                     quotes, Schwab Trader API, OAuth2 access-token refresh); get_chain
                                     (options) still a stub -- see docstring for confirmed-vs-guessed fields
@@ -1668,13 +1802,23 @@ backend/
                                     + schema creation (historical_bars table, UNIQUE provider+symbol+
                                     timeframe+timestamp). v0.1.18 added validation_status/
                                     validation_warnings columns (migrated into an existing v0.1.17 file via
-                                    PRAGMA table_info) and the quarantined_bars table (see section 17)
+                                    PRAGMA table_info) and the quarantined_bars table (see section 17).
+                                    v0.1.19 added raw_ingestions (no migration needed -- a new table only,
+                                    CREATE TABLE IF NOT EXISTS handles a pre-v0.1.19 file the same as a
+                                    fresh one) -- see section 18
       historical_bar_repository.py save_bars() / get_bars() -- HistoricalBar in, HistoricalBar out, never
                                     a raw sqlite3.Row past this file's own boundary. Never imports
                                     app.providers or app.ingestion -- checked by
                                     test_historical_bar_repository.py::TestProviderIndependence.
                                     v0.1.18 added save_validated_bars()/save_rejected_bars()/
-                                    get_quarantined_bars() -- save_bars() itself is unchanged
+                                    get_quarantined_bars() -- save_bars() itself is unchanged.
+                                    v0.1.19: untouched -- raw storage is a separate repository/table
+      raw_ingestion_repository.py  v0.1.19: save_raw_ingestion()/persist_raw_ingestion_safely()/
+                                    get_raw_ingestions() -- the ONLY module that writes to raw_ingestions.
+                                    persist_raw_ingestion_safely() is what every real call site
+                                    (alpaca_provider.py, massive_provider.py, historical_comparison.py)
+                                    actually calls: never raises, so a raw-storage failure can't break
+                                    an otherwise-successful fetch/upload. See section 18
     streaming/                     v0.1.12: backend-only real-time streaming (see README section 14)
       base.py                      v0.1.13: ReconnectingQuoteStream -- the reconnect/backoff loop and the
                                     three provider-agnostic exceptions (StreamCredentialsMissing/
@@ -1722,7 +1866,10 @@ backend/
       historical_comparison.py     v0.1.16: POST /market-data/history/compare -- uploads a CSV of OHLCV
                                     bars (via ingestion/ohlcv_csv.py), diffs it against fetch_normalized_bars()'s
                                     provider call for the same symbol/timeframe/period, reports row-count/
-                                    timestamp/OHLC/volume differences without auto-correcting any of them
+                                    timestamp/OHLC/volume differences without auto-correcting any of them.
+                                    v0.1.19: persists the uploaded CSV's raw text (persist_raw_ingestion_safely(),
+                                    source="csv") right after decoding it, before parse_ohlcv_csv() runs --
+                                    see section 18
       historical_storage.py        v0.1.17: POST /market-data/history/save (bars the caller already
                                     fetched -> app.storage.historical_bar_repository.save_bars(), never a
                                     second provider call) + GET /market-data/{symbol}/history/stored
@@ -1753,9 +1900,13 @@ backend/
     test_providers.py              v0.1.2: interface conformance, placeholders, config-driven
                                     selection, and a check that the engine imports neither
                                     app.providers nor app.ingestion
-    test_alpaca_provider.py        v0.1.4: mocked-HTTP tests for real Alpaca bars/quotes (TSLA/NVDA)
+    test_alpaca_provider.py        v0.1.4: mocked-HTTP tests for real Alpaca bars/quotes (TSLA/NVDA).
+                                    v0.1.19: isolated_db fixture added -- get_historical_data() now writes
+                                    a raw-ingestion row as a side effect, so this file needs the same
+                                    throwaway DATABASE_PATH isolation test_historical_storage_api.py uses
     test_massive_provider.py       v0.1.6: mocked-HTTP tests for real Massive bars/quotes (TSLA/NVDA),
-                                    incl. explicit ms-vs-ns timestamp and bid/ask-case regression tests
+                                    incl. explicit ms-vs-ns timestamp and bid/ask-case regression tests.
+                                    v0.1.19: isolated_db fixture added, same reason as test_alpaca_provider.py
     test_schwab_provider.py        v0.1.8: mocked-HTTP tests for real Schwab bars/quotes (TSLA/NVDA),
                                     incl. OAuth2 access-token refresh/caching/re-refresh (injectable clock,
                                     no real timing dependency) and per-credential missing-env-var checks
@@ -1799,7 +1950,9 @@ backend/
     test_historical_comparison_api.py  v0.1.16: POST .../compare tests -- identical/diverging data, CSV-
                                     only/API-only timestamps, wrong-symbol and out-of-range CSV rows
                                     excluded (and noted), CSV parse errors surfaced without failing the
-                                    request, the same exception mapping as test_historical_data_api.py
+                                    request, the same exception mapping as test_historical_data_api.py.
+                                    v0.1.19: isolated_db fixture added -- this route now persists a raw-
+                                    CSV row as a side effect, same reason as test_alpaca_provider.py
     test_historical_bar_repository.py  v0.1.17: save_bars()/get_bars() against a throwaway tmp_path SQLite
                                     file per test -- insertion, retrieval, duplicate protection, multiple
                                     symbols/timeframes/providers not bleeding into each other, inclusive
@@ -1820,6 +1973,15 @@ backend/
                                     quarantined not stored, one pair's provider failure is caught and
                                     reported without stopping the rest of the cycle, and the loop runs its
                                     first cycle immediately and stops cleanly when asked
+    test_pipeline_end_to_end.py    v0.1.18/19: the full-pipeline integration test -- real AlpacaProvider/
+                                    MassiveProvider parsing (mocked at the httpx transport layer only),
+                                    real CSV ingestion, real HTTP save/read/compare routes, real storage.
+                                    TSLA/NVDA/MCL each carry one deliberately invalid bar. Covers
+                                    ingestion, raw storage (added v0.1.19 -- see section 18), validation,
+                                    normalization, historical storage, timestamp consistency, dedup,
+                                    idempotency, symbol separation, and the ALLOWED_SYMBOLS read/write
+                                    asymmetry finding (POST .../save is symbol-agnostic; the GET routes
+                                    are not)
     fixtures/sample_thinkorswim_chain.csv  v0.1.1: example chain export -- an OPTIONS-CHAIN snapshot
                                     (underlying "MCL"), not an OHLCV bar time series; cannot be used as-is
                                     with the v0.1.16 historical-data comparison route -- see README section 15

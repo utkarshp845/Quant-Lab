@@ -25,6 +25,11 @@ of the comparison -- the exact same validated path GET
 /market-data/{symbol}/history uses -- rather than a second, parallel
 way to ask a provider for bars. Exception mapping for that call is
 therefore identical to that route's (see its docstring).
+
+v0.1.19: this is also the one production entry point where a raw CSV
+upload is available before parsing touches it, so it's where the raw-
+storage stage persists the original CSV text -- see
+app/storage/raw_ingestion_repository.py.
 """
 
 from datetime import date, datetime, timezone
@@ -39,6 +44,7 @@ from app.models.historical_comparison import (
     HistoricalComparisonResponse,
     HistoricalComparisonRow,
 )
+from app.storage.raw_ingestion_repository import persist_raw_ingestion_safely
 
 router = APIRouter()
 
@@ -105,6 +111,25 @@ async def compare_historical_csv(
         csv_text = raw_bytes.decode("utf-8-sig")  # tolerate a BOM from Excel/Windows exports
     except UnicodeDecodeError as exc:
         raise HTTPException(status_code=422, detail="Could not read the file as UTF-8 text.") from exc
+
+    # v0.1.19: the ORIGINAL uploaded CSV text, persisted before parsing
+    # touches it -- see app/storage/raw_ingestion_repository.py. Placed
+    # here specifically (before parse_ohlcv_csv, not after) so the raw
+    # content is preserved even when parsing itself fails below -- see
+    # that module's docstring for why "what did the file literally
+    # contain when this failed" must not depend on parsing succeeding.
+    # persist_raw_ingestion_safely() never raises, so a storage problem
+    # here can't turn a working comparison request into a failure.
+    persist_raw_ingestion_safely(
+        source="csv",
+        symbol=symbol,
+        timeframe=timeframe,
+        source_start=start,
+        source_end=end,
+        raw_payload=csv_text,
+        content_type="csv",
+        metadata={"filename": file.filename},
+    )
 
     try:
         csv_result = parse_ohlcv_csv(csv_text, default_symbol=symbol)

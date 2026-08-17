@@ -1,5 +1,6 @@
 """SQLite connection + schema for persisted historical bars (v0.1.17;
-validation metadata + quarantine table added v0.1.18).
+validation metadata + quarantine table added v0.1.18; raw-ingestion
+table added v0.1.19).
 
 Why SQLite, specifically: this is a local, single-user, no-auth
 educational tool (see README section 1) -- a server-based RDBMS
@@ -78,6 +79,48 @@ CREATE TABLE IF NOT EXISTS quarantined_bars (
 );
 CREATE INDEX IF NOT EXISTS idx_quarantined_bars_lookup
     ON quarantined_bars (symbol, timeframe, provider, timestamp);
+
+-- v0.1.19: the ORIGINAL provider response / CSV content, captured
+-- before any parsing, validation, or normalization happens to it --
+-- see app/storage/raw_ingestion_repository.py. Deliberately NOT
+-- shaped like historical_bars/quarantined_bars: those are one row per
+-- BAR (OHLCV columns); this is one row per INGESTION REQUEST (one
+-- provider fetch call, or one CSV upload), holding the response/file
+-- as opaque text in `raw_payload` -- forcing it into OHLCV columns
+-- would defeat the entire point of a raw stage, which is to preserve
+-- whatever shape the source actually used (Alpaca's `t`/`o`/`h`/`l`/
+-- `c`/`v` keys, Massive's own key names, a CSV's original column
+-- headers and cell text -- not this app's canonical field names).
+-- `symbol`/`timeframe`/`source_start`/`source_end` are nullable: a
+-- CSV upload may cover more than one symbol, and not every source
+-- has a meaningful timeframe. `timeframe` records whatever value the
+-- SOURCE itself was actually asked for -- Alpaca's own "1Day"/"1Min"
+-- vocabulary, Massive's own "day"/"minute" timespan, this app's "1d"
+-- for a CSV upload (which has no provider vocabulary of its own) --
+-- not a single normalized value across sources, on purpose: this is a
+-- raw/audit column, not a query key other tables join against, so
+-- preserving what was truly asked for beats forcing one vocabulary
+-- onto every source. No UNIQUE constraint, same reasoning as
+-- quarantined_bars: this is an append-only log of every ingestion
+-- attempt, not a deduplicated table -- re-fetching the same
+-- symbol/range twice (e.g. auto_ingest.py's overlapping lookback
+-- window) legitimately produces two raw rows, one per real request
+-- actually made.
+CREATE TABLE IF NOT EXISTS raw_ingestions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    batch_id TEXT NOT NULL UNIQUE,
+    source TEXT NOT NULL,
+    symbol TEXT,
+    timeframe TEXT,
+    source_start TEXT,
+    source_end TEXT,
+    ingested_at TEXT NOT NULL,
+    content_type TEXT NOT NULL,
+    raw_payload TEXT NOT NULL,
+    metadata TEXT NOT NULL DEFAULT '{}'
+);
+CREATE INDEX IF NOT EXISTS idx_raw_ingestions_lookup
+    ON raw_ingestions (source, symbol, ingested_at);
 """
 
 # v0.1.18: columns added to an already-shipped table, so CREATE TABLE IF
