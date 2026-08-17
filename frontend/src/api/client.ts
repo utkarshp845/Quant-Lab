@@ -1,5 +1,6 @@
 import type { BearPutSpreadRequest, BearPutSpreadResponse } from "../types/bearPutSpread";
 import type { CsvImportResponse } from "../types/csvImport";
+import type { FeatureComputeRequest, FeatureComputeResponse, FeatureRecordsResponse } from "../types/features";
 import type {
   HistoricalBar,
   HistoricalBarsResponse,
@@ -11,6 +12,7 @@ import type {
   Timeframe,
 } from "../types/marketData";
 import type { MonteCarloRequest, MonteCarloResult } from "../types/monteCarlo";
+import type { Experiment, ExperimentCreateRequest, ExperimentEventsResponse } from "../types/research";
 
 // Exported so anything that needs the backend's origin without going
 // through one of this file's request helpers -- currently just the
@@ -203,6 +205,76 @@ export function getStoredHistoricalBars(params: {
     provider: params.provider,
   });
   return getJson<HistoricalBarsResponse>(`/market-data/${encodeURIComponent(params.symbol)}/history/stored?${qs}`);
+}
+
+// ---- Feature Engine v1 (see backend/app/api/features.py) ----
+// Reads/writes ONLY the already-normalized historical_bars ->
+// historical_features pipeline; no feature math happens in this
+// frontend at all -- every value rendered came back from one of these
+// two calls verbatim.
+
+/**
+ * POST /api/features/compute -- fetches bars (and, for eligible
+ * symbols, SPY/QQQ bars) for the given symbol/timeframe/provider/date
+ * range, computes the full feature contract, and persists it. Also
+ * returns the computed rows directly, so a caller doesn't need a
+ * second GET just to see what it produced.
+ */
+export function computeFeatures(request: FeatureComputeRequest): Promise<FeatureComputeResponse> {
+  return postJson<FeatureComputeResponse>("/features/compute", request);
+}
+
+/**
+ * GET /api/features/{symbol} -- reads back previously computed and
+ * persisted FeatureRecords; never triggers a computation itself.
+ */
+export function getFeatures(params: {
+  symbol: string;
+  start: string; // YYYY-MM-DD
+  end: string;
+  timeframe: string;
+  provider: string;
+}): Promise<FeatureRecordsResponse> {
+  const qs = new URLSearchParams({
+    start: params.start,
+    end: params.end,
+    timeframe: params.timeframe,
+    provider: params.provider,
+  });
+  return getJson<FeatureRecordsResponse>(`/features/${encodeURIComponent(params.symbol)}?${qs}`);
+}
+
+// ---- Research v1 (see backend/app/api/research.py) ----
+// Every statistic rendered anywhere in the Research workspace comes
+// from one of these calls -- no aggregation, percentile, threshold-
+// probability, or segmentation math is computed in this frontend (the
+// backend does not yet expose those; see the Research workspace's own
+// gap notices rather than approximating them here).
+
+export function createExperiment(request: ExperimentCreateRequest): Promise<Experiment> {
+  return postJson<Experiment>("/research/experiments", request);
+}
+
+export function listExperiments(): Promise<Experiment[]> {
+  return getJson<Experiment[]>("/research/experiments");
+}
+
+export function getExperiment(id: string): Promise<Experiment> {
+  return getJson<Experiment>(`/research/experiments/${encodeURIComponent(id)}`);
+}
+
+export function getExperimentEvents(id: string): Promise<ExperimentEventsResponse> {
+  return getJson<ExperimentEventsResponse>(`/research/experiments/${encodeURIComponent(id)}/events`);
+}
+
+/** Runs (or re-runs) an experiment in place, against its own fixed
+ * symbol/date-range/timeframe/provider -- see ExperimentForm's
+ * "duplicate" flow for how a DIFFERENT date range/dataset is run
+ * instead (a new experiment, not a mutation of this one), matching the
+ * backend's deliberate "parameters are immutable after creation"
+ * reproducibility guarantee. */
+export function runExperiment(id: string): Promise<Experiment> {
+  return postJson<Experiment>(`/research/experiments/${encodeURIComponent(id)}/run`, undefined);
 }
 
 export async function importCsv(file: File): Promise<CsvImportResponse> {

@@ -1551,3 +1551,462 @@ body {
 .assumptions-footer li {
   margin-bottom: 4px;
 }
+
+/* ==========================================================
+   App-level navigation (added alongside Feature Explorer /
+   Research workspace) -- see src/components/NavBar.tsx.
+   ========================================================== */
+
+.app-nav {
+  display: flex;
+  align-items: center;
+  gap: 24px;
+  padding: 12px 20px;
+  background: var(--color-surface);
+  border-bottom: 1px solid var(--color-border);
+  position: sticky;
+  top: 0;
+  z-index: 10;
+}
+
+.app-nav-brand {
+  font-weight: 700;
+  font-size: 0.95rem;
+  white-space: nowrap;
+}
+
+.app-nav-items {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.app-nav-tab {
+  background: transparent;
+  border: none;
+  border-radius: 6px;
+  padding: 6px 12px;
+  font-size: 0.85rem;
+  font-weight: 600;
+  cursor: pointer;
+  color: var(--color-text-muted);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.app-nav-tab-active {
+  background: var(--color-accent);
+  color: white;
+}
+
+.app-nav-tab:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+
+.app-nav-soon {
+  font-size: 0.62rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  background: var(--color-border);
+  border-radius: 999px;
+  padding: 1px 6px;
+}
+
+.coming-soon-panel {
+  text-align: center;
+  padding: 40px 22px;
+}
+
+/* ==========================================================
+   Shared button styling for the two new pages -- there is no
+   single shared `.btn` class in this app (each existing panel
+   declares its own), so this stays scoped to
+   `.feature-explorer-page`/`.research-workspace` rather than
+   risking a visual change anywhere else.
+   ========================================================== */
+
+.feature-explorer-page button,
+.research-workspace button {
+  background: var(--color-accent);
+  color: white;
+  border: none;
+  border-radius: 8px;
+  padding: 7px 14px;
+  font-size: 0.85rem;
+  font-weight: 600;
+  cursor: pointer;
+  height: fit-content;
+}
+
+.feature-explorer-page button:disabled,
+.research-workspace button:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.feature-explorer-page select,
+.feature-explorer-page input,
+.research-workspace select,
+.research-workspace input,
+.research-workspace textarea {
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  padding: 6px 9px;
+  font-size: 0.88rem;
+  color: var(--color-text);
+  background: var(--color-surface);
+}
+
+.research-workspace textarea {
+  width: 100%;
+  font-family: inherit;
+  resize: vertical;
+}
+
+.experiment-form-cancel,
+.experiment-table-actions button,
+.condition-add-btn {
+  background: transparent !important;
+  color: var(--color-text-muted) !important;
+  border: 1px solid var(--color-border) !important;
+}
+
+.experiment-table-actions {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+/* ==========================================================
+   Feature Explorer
+   ========================================================== */
+
+.feature-explorer-controls-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: 14px;
+  margin-bottom: 10px;
+}
+
+.feature-explorer-actions {
+  margin-top: 4px;
+}
+
+.feature-explorer-empty {
+  color: var(--color-text-muted);
+  font-size: 0.9rem;
+  margin-bottom: 10px;
+}
+
+.feature-explorer-timestamp-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.feature-explorer-ts {
+  background: var(--color-surface) !important;
+  color: var(--color-text) !important;
+  border: 1px solid var(--color-border) !important;
+  font-weight: 500 !important;
+  font-size: 0.8rem !important;
+}
+
+.feature-explorer-ts-active {
+  background: var(--color-accent) !important;
+  color: white !important;
+  border-color: var(--color-accent) !important;
+}
+
+.feature-explorer-dataset-banner {
+  background: #fbfaff;
+}
+
+.feature-explorer-dataset-grid,
+.research-results-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 12px 20px;
+}
+
+.feature-explorer-dataset-grid dt,
+.experiment-results-view dt {
+  font-size: 0.72rem;
+  color: var(--color-text-muted);
+  margin-bottom: 2px;
+}
+
+.feature-explorer-dataset-grid dd,
+.experiment-results-view dd {
+  margin: 0;
+  font-size: 0.92rem;
+  font-weight: 600;
+}
+
+.feature-explorer-dataset-grid code {
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  font-weight: 400;
+}
+
+@media (max-width: 780px) {
+  .feature-explorer-dataset-grid,
+  .research-results-grid {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+
+.feature-group-card {
+  margin-bottom: 14px;
+}
+
+.feature-group-grid {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  row-gap: 6px;
+  column-gap: 16px;
+  margin: 0;
+}
+
+.feature-group-row {
+  display: contents;
+}
+
+.feature-group-row dt {
+  color: var(--color-text-muted);
+  font-size: 0.85rem;
+}
+
+.feature-group-row dd {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 0.88rem;
+  text-align: right;
+}
+
+.feature-value-null {
+  color: var(--color-text-muted);
+  font-style: italic;
+}
+
+/* ==========================================================
+   Research workspace
+   ========================================================== */
+
+.research-gap-banner {
+  background: #fdf1e0;
+  border: 1px solid #f0d9ad;
+  color: #6b5b12;
+  border-radius: 8px;
+  padding: 10px 14px;
+  font-size: 0.82rem;
+  margin-bottom: 18px;
+}
+
+.experiment-list-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12px;
+  gap: 12px;
+}
+
+.experiment-list-empty {
+  color: var(--color-text-muted);
+  font-size: 0.9rem;
+}
+
+.experiment-table td,
+.experiment-table th {
+  vertical-align: middle;
+}
+
+.experiment-status {
+  font-size: 0.75rem;
+  font-weight: 700;
+  padding: 2px 8px;
+  border-radius: 999px;
+  text-transform: capitalize;
+}
+
+.experiment-status-draft {
+  background: var(--color-border);
+  color: var(--color-text-muted);
+}
+
+.experiment-status-running {
+  background: var(--color-buy-bg);
+  color: var(--color-buy);
+}
+
+.experiment-status-completed {
+  background: var(--color-profit-bg);
+  color: var(--color-profit);
+}
+
+.experiment-status-failed {
+  background: var(--color-loss-bg);
+  color: var(--color-loss);
+}
+
+.experiment-form-row {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 14px;
+}
+
+@media (max-width: 780px) {
+  .experiment-form-row {
+    grid-template-columns: 1fr;
+  }
+}
+
+.experiment-form-subheading {
+  margin: 18px 0 8px;
+  font-size: 0.92rem;
+  font-weight: 700;
+}
+
+.experiment-form-note {
+  font-size: 0.82rem;
+  color: var(--color-text-muted);
+}
+
+.experiment-form-actions {
+  display: flex;
+  gap: 10px;
+  margin-top: 16px;
+}
+
+.condition-builder {
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  padding: 12px 14px;
+  margin-bottom: 6px;
+}
+
+.condition-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.condition-row-label {
+  font-size: 0.85rem;
+  color: var(--color-text-muted);
+}
+
+.condition-minutes-input {
+  width: 64px;
+}
+
+.condition-threshold-input {
+  width: 90px;
+}
+
+.condition-metric-preview {
+  margin: 8px 0 0;
+  font-size: 0.78rem;
+  color: var(--color-text-muted);
+}
+
+.condition-metric-preview code,
+.research-block code {
+  font-family: var(--font-mono);
+  background: var(--color-bg);
+  padding: 1px 5px;
+  border-radius: 4px;
+}
+
+.condition-add-btn {
+  margin-top: 10px;
+  font-size: 0.78rem !important;
+  padding: 5px 10px !important;
+}
+
+.research-warnings {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 12px 0;
+}
+
+.research-warning {
+  border-radius: 8px;
+  padding: 9px 12px;
+  font-size: 0.85rem;
+}
+
+.research-warning-warning {
+  background: var(--color-loss-bg);
+  border: 1px solid #f3b4b4;
+  color: var(--color-loss);
+}
+
+.research-warning-info {
+  background: var(--color-buy-bg);
+  border: 1px solid #b9d3fb;
+  color: var(--color-buy);
+}
+
+.research-block {
+  margin-bottom: 14px;
+}
+
+.research-outcome-heading {
+  margin-top: 14px;
+}
+
+.experiment-run-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 6px 0 4px;
+}
+
+.experiment-run-pill {
+  position: static;
+  background: var(--color-buy-bg);
+  color: var(--color-buy);
+}
+
+.research-no-results {
+  color: var(--color-text-muted);
+  font-size: 0.9rem;
+}
+
+.research-gap-note {
+  margin-top: 14px;
+  font-size: 0.78rem;
+  color: var(--color-text-muted);
+  border-top: 1px dashed var(--color-border);
+  padding-top: 10px;
+}
+
+.research-chart-empty {
+  color: var(--color-text-muted);
+  font-size: 0.85rem;
+}
+
+.research-dist-chart {
+  font-family: var(--font-mono);
+}
+
+.segmentation-panel {
+  background: #f9f9fb;
+}
+
+.research-interpretation-list {
+  margin: 0;
+  padding-left: 20px;
+  font-size: 0.88rem;
+  color: var(--color-text);
+}
+
+.research-interpretation-list li {
+  margin-bottom: 8px;
+}
