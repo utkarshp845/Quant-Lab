@@ -1,94 +1,65 @@
-# Pandey Quant Lab — v0.1
+# Pandey Quant Lab
 
-A transparent, educational **Bear Put Spread Calculator**. You type in option
-quotes by hand (from any broker's option chain), and the app walks through
-every calculation in the analysis — debit, max loss/profit, breakeven,
-delta, volatility, probability, and the expiration payoff — showing the
-formula, the substituted numbers, and the result at each step.
+A transparent, educational quant toolkit: a **bear put spread calculator**
+where every number traces back to a visible formula, plus a **market-data
+pipeline** (live quotes, streaming, historical bars) and a **research
+layer** (hypothesis testing + feature computation) built on top of it.
 
-**This is not a trading bot.** v0.1 has no live market data, no brokerage
-connection, no scanner, and makes no buy/sell recommendations. It is a
-calculator you drive by hand, built so every number on screen can be traced
-back to a formula you can read.
+**This is not a trading bot.** No brokerage connection, no order
+execution, no autonomous buy/sell recommendations, no user accounts. See
+[10. What is intentionally NOT implemented](#10-what-is-intentionally-not-implemented-yet)
+and [`BUILD_LOG.md`](BUILD_LOG.md) for the full change history.
 
 ---
 
-## 1. What Pandey Quant Lab is
+## 1. What it does today
 
-An options-learning instrument. The goal is to let you reproduce, by hand,
-the same bear-put-spread analysis a trader would sketch on paper or in a
-spreadsheet — but with every step shown, not hidden behind a single
-"Calculate" button.
+**Calculator** — type in an underlying and two put legs (or import a CSV
+option chain and pick two rows) and get: debit (mid + a conservative
+execution-check variant), max loss/profit, breakeven, spread delta,
+average IV, expected move, a probability-of-below-breakeven estimate, a
+full bucketed probability distribution with Expected Value, and a
+100,000-path Monte Carlo simulation — every one with its formula shown,
+not hidden behind a button. See [4. How the mathematics works](#4-how-the-mathematics-works).
 
-## 2. What it does
+**Market data** — a provider-agnostic layer (`MarketDataProvider`) with
+real implementations for **Alpaca**, **Massive** (Polygon.io), **Schwab**
+(OAuth2), and CSV import, each returning the same normalized shapes
+regardless of source. Live quotes, WebSocket streaming (with a REST
+polling fallback for accounts without streaming entitlement), and
+historical OHLCV bars (TSLA/NVDA, 1m–1d) are all live in the UI as
+side-by-side references — never inputs the calculator auto-applies. See
+[8. Market data provider architecture](#8-market-data-provider-architecture).
 
-- Lets you manually enter an underlying (symbol, price, DTE) and two put
-  legs (a long put you buy, a short put you sell) -- or **(v0.1.1) import
-  a CSV export of an options chain** and pick the two legs from a table
-  instead of typing them in, with an instant Spread Builder preview as you
-  click, and a **tiny scanner** that computes every valid long/short
-  combination in the file and lets you filter by DTE/delta/max loss. See
-  [12. Importing options data from CSV](#12-importing-options-data-from-csv-v011)
-  below.
-- Computes, and shows the formula for: debit, max loss, max profit,
-  breakeven, net spread delta, average IV, expected 1-standard-deviation
-  move, a z-score, and an approximate probability of finishing below
-  breakeven.
-- Lets you type any hypothetical expiration price and see the resulting P/L.
-- Generates a payoff scenario table and a payoff diagram (SVG, no charting
-  library).
-- **(Phase 2) Builds an actual probability distribution**: splits the range
-  of possible expiration prices into buckets, gives each an exact
-  probability and a P/L, and combines them into an Expected Value — see
-  [Phase 2 — the probability engine](#phase-2--the-probability-engine)
-  below.
-- **(Phase 3) Runs a Monte Carlo simulation**: draws up to 100,000 random
-  expiration prices from the same model and reports probability of
-  profit/max-loss/max-profit, expected value, expected return, median,
-  percentile bands, and expected gain/loss — see
-  [Phase 3 — Monte Carlo simulation](#phase-3--monte-carlo-simulation)
-  below.
-- Displays a "Trade Analysis" summary card — deliberately not a
-  buy/sell recommendation.
-- Validates inputs (strike ordering, non-negative prices, delta range,
-  etc.) and reports clear errors instead of producing nonsense numbers.
-- **(v0.1.9) Shows a live equity quote** next to a CSV-imported chain's
-  underlying price (pick Alpaca, Massive, or Schwab) — a reference for how
-  stale the imported price is, not an input the calculator uses. See
-  [13. Market data provider architecture](#13-market-data-provider-architecture-v012).
-- **(v0.1.16) Fetches historical OHLCV bars** for TSLA/NVDA (pick Alpaca or
-  Massive, a timeframe, and a date range) and can diff an uploaded CSV of
-  bars against that same request, surfacing row-count/timestamp/OHLC/
-  volume differences without auto-correcting any of them. Independent of
-  the calculator — see
-  [15. Historical market data](#15-historical-market-data-v0116).
-- **(v0.1.17) Persists fetched historical bars to a local SQLite database**
-  and reads them back later with no provider contacted at all — a
-  deliberate "Save to Database" / "Load from Database" action, not
-  automatic. See
-  [16. Historical bar storage](#16-historical-bar-storage-v0117).
-- **(v0.1.18) Validates every bar before it's stored** — impossible
-  OHLCV values and in-batch duplicates are rejected and quarantined
-  (never silently dropped); out-of-order arrivals, unusual gaps, and
-  extreme price moves are flagged but still stored — and **can pull
-  bars on an unattended schedule** instead of requiring a manual "Save
-  to Database" click, opt-in via `AUTO_INGEST_ENABLED`. See
-  [17. Bar validation, quarantine, and auto-ingestion](#17-bar-validation-quarantine-and-auto-ingestion-v0118).
-- **(v0.1.19) Persists the original provider/CSV payload before any
-  parsing touches it** — a `raw_ingestions` audit table, independent of
-  the normalized/quarantined tables, so "what did the provider/file
-  literally give us" is always answerable, even for a record that later
-  failed validation. See
-  [18. Raw-ingestion storage](#18-raw-ingestion-storage-v0119).
+**Historical data pipeline** — fetched bars are validated (impossible
+OHLCV values and duplicates rejected to a quarantine table; soft
+anomalies flagged but kept), persisted to SQLite, and the original
+provider/CSV payload is preserved *before* any parsing touches it (a
+separate raw-ingestion audit table). An opt-in background loop can keep
+pulling bars on a schedule instead of a manual "Save to Database" click.
+See [9](#9-historical-market-data-pipeline)/[12](#12-historical-bar-storage).
 
-## 3. How to install dependencies
+**Research v1** — define a falsifiable condition/outcome hypothesis
+(e.g. "TSLA down ≥1% in 30m → down another ≥0.5% in the next 60m"), run
+it against the stored historical dataset, and get back every individual
+qualifying signal plus aggregate statistics. Deterministic, reproducible,
+never modifies historical data. Not backtesting, not ML. See
+[15. Research v1](#15-research-v1).
 
-Backend (Python 3.11+ recommended; developed and tested on 3.13):
+**Feature Engine v1** — transforms normalized bars into a fixed set of
+timestamped PRICE/VOLUME/VOLATILITY/MARKET CONTEXT/PRICE POSITION values,
+persisted for Research (or any future consumer) to read rather than
+recompute. See [16. Feature Engine v1](#16-feature-engine-v1).
+
+## 2. Install and run
+
+Backend (Python 3.11+; developed on 3.13):
 
 ```bash
 cd backend
 python3 -m venv venv
 ./venv/bin/pip install -r requirements.txt
+./venv/bin/uvicorn app.main:app --reload --port 8000
 ```
 
 Frontend (Node 18+):
@@ -96,1986 +67,400 @@ Frontend (Node 18+):
 ```bash
 cd frontend
 npm install
-```
-
-## 4. How to run the backend
-
-```bash
-cd backend
-./venv/bin/uvicorn app.main:app --reload --port 8000
-```
-
-The API is now at `http://localhost:8000`. Interactive docs (Swagger UI)
-are auto-generated by FastAPI at `http://localhost:8000/docs`.
-
-## 5. How to run the frontend
-
-```bash
-cd frontend
 npm run dev
 ```
 
-Open `http://localhost:5173`. The frontend expects the backend to be
-running at `http://localhost:8000` (see `frontend/src/api/client.ts`).
+Or both together: `./scripts/dev.sh start|status|stop|restart` (PIDs/logs
+in the gitignored `.dev/`). Backend: `http://localhost:8000` (Swagger UI
+at `/docs`). Frontend: `http://localhost:5173`, expects the backend at
+`:8000` (`frontend/src/api/client.ts`).
 
-**Or run both together with one command** (after installing dependencies
-per section 3, once, the normal way): `scripts/dev.sh` wraps the two
-commands above under a single start/stop/restart/status interface, so you
-don't need two terminal tabs:
+Backend tests: `cd backend && ./venv/bin/pytest` — 650+ tests, all
+against synthetic/mocked data, no live network calls or real credentials
+required.
 
-```bash
-./scripts/dev.sh start     # starts backend (:8000) and frontend (:5173)
-./scripts/dev.sh status    # what's running, and where the logs are
-./scripts/dev.sh stop      # stops both
-./scripts/dev.sh restart   # stop then start
-```
+## 3. Example inputs and outputs
 
-PID files and logs live in `.dev/` (gitignored) at the repo root. This
-is a convenience wrapper, not a production deployment mechanism — it
-runs the exact same `uvicorn --reload` / `npm run dev` dev servers
-described above, just backgrounded and PID-tracked.
+The calculator is pre-populated on load with this hypothetical setup:
 
-## 6. Example inputs
+| | Underlying | Long Put (BUY) | Short Put (SELL) |
+|---|---|---|---|
+| Price / Strike | $82.00 | 85 | 77 |
+| Bid / Ask | — | $5.00 / $5.10 | $0.71 / $0.85 |
+| Delta / IV | — | -0.58 / 44% | -0.29 / 42% |
+| DTE | 30 | | |
 
-The calculator is pre-populated with this hypothetical setup on load:
-
-| | Underlying |
-|---|---|
-| Price | $82.00 |
-| DTE | 30 |
-
-| | Long Put (BUY) | Short Put (SELL) |
-|---|---|---|
-| Strike | 85 | 77 |
-| Bid | $5.00 | $0.71 |
-| Ask | $5.10 | $0.85 |
-| Delta | -0.58 | -0.29 |
-| IV | 44% | 42% |
-
-## 7. Expected outputs
-
-With the example inputs above, the app should show:
-
-**Primary analysis (Mid Debit — drives everything below):**
+Expected output (primary, Mid Debit — drives everything below):
 
 | Metric | Value |
 |---|---|
-| Mid Debit | $4.27 / share ($427.00 / contract) |
-| Max Loss | $427.00 |
-| Max Profit | $373.00 |
+| Mid Debit | $4.27/share ($427/contract) |
+| Max Loss / Max Profit | $427 / $373 |
 | Breakeven | $80.73 |
 | Spread Delta | -0.29 |
-| Average IV | 43% |
 | Expected Move | ≈ ±$10.11 |
-| Z-score of breakeven | ≈ -0.126 |
-| Approx. probability below breakeven | ≈ 45.0% |
-| Expected Value (Phase 2, simplified model) | ≈ -$57.77 / contract |
-| Expected Value (Phase 3, Monte Carlo, 100k sims) | ≈ -$57.77 / contract ± a few dollars, run-to-run |
+| Probability below breakeven | ≈ 45.0% |
+| Expected Value (closed-form and Monte Carlo) | ≈ -$57.77/contract |
 
-**Execution Reality Check (Conservative Entry Debit — the original spec's
-worked-example numbers, still exact, just relabeled):**
+A second "Execution Reality Check" panel repeats these using a
+**Conservative Entry Debit** (buy at ask, sell at bid — $4.39/share,
+Max Loss $439, Max Profit $361, Breakeven $80.61, $12 slippage vs. mid).
+These exact numbers are encoded as tests —
+`backend/tests/test_calculations.py::TestGraduationExampleMidDebit` /
+`TestGraduationExampleConservativeDebit`, plus the probability/Monte
+Carlo/API test files.
 
-| Metric | Value |
-|---|---|
-| Conservative Entry Debit | $4.39 / share ($439.00 / contract) |
-| Conservative Max Loss | $439.00 |
-| Conservative Max Profit | $361.00 |
-| Conservative Breakeven | $80.61 |
-| Slippage Cost vs. Mid | $12.00 / contract |
+## 4. How the mathematics works
 
-These exact numbers are also encoded as automated tests — see
-`backend/tests/test_calculations.py::TestGraduationExampleMidDebit` and
-`TestGraduationExampleConservativeDebit`,
-`backend/tests/test_probability_distribution.py`,
-`backend/tests/test_monte_carlo.py`, and
-`backend/tests/test_api.py::TestBearPutSpreadEndpoint::test_graduation_example_full_response`.
-
-## 8. How the mathematics works
-
-A **bear put spread** buys a put at a higher strike (the "long put") and
-sells a put at a lower strike (the "short put"), both with the same
-expiration. It profits if the underlying falls.
-
-**Debit — computed two ways.** This app computes the debit twice, because
-the two conventions answer different questions:
+A **bear put spread** buys a put at a higher strike and sells one at a
+lower strike, same expiration; it profits if the underlying falls.
 
 ```
-Mid Price          = (Bid + Ask) / 2
-Mid Debit          = Long Put Mid − Short Put Mid       (PRIMARY)
-Conservative Debit = Long Put Ask − Short Put Bid       (execution check)
-```
+Mid Debit          = Long Put Mid − Short Put Mid        (PRIMARY -- drives everything below)
+Conservative Debit = Long Put Ask − Short Put Bid         (execution-cost check only)
 
-**Mid Debit is the primary debit** — it drives every calculation below
-(Max Loss/Profit, Breakeven, the Probability Engine, Monte Carlo). It uses
-the midpoint of each leg's bid/ask, i.e. what the market is "really"
-quoting the spread at, ignoring the cost of actually crossing the spread.
-Use it for theoretical trade comparison, expected-value modeling, and
-comparing many candidate trades against each other.
-
-**Conservative Entry Debit** buys the long put at the **ask** (what a
-buyer must pay) and sells the short put at the **bid** (what a seller
-receives) — the worst realistic price if you had to cross the full
-bid/ask spread on both legs at once. It feeds a separate "Execution
-Reality Check" panel (conservative Max Loss/Profit/Breakeven, and a
-"Slippage Cost" — the extra amount the conservative debit costs versus
-the mid) and does **not** feed anything else in this app. Use it for
-realistic entry cost, conservative P/L, and checking whether the trade
-survives transaction costs and slippage.
-
-Both are the exact same formula (`long price − short price`) — see
-`backend/app/calculations/bear_put_spread.py::debit_per_share` — just fed
-different input prices.
-
-One option contract covers 100 shares, so the dollar cost is the debit
-times 100.
-
-**Max Loss.** A debit spread's worst case is losing the entire amount paid
-to enter it (if the underlying finishes at or above the long strike, both
-puts expire worthless). Uses the primary (Mid) Debit:
-
-```
-Max Loss = Mid Debit × 100
-```
-
-**Max Profit.** The spread's value is capped at the distance between the
-strikes (the "strike width"), reached when the underlying finishes at or
-below the short strike:
-
-```
-Strike Width = Long Strike − Short Strike
-Max Profit = (Strike Width − Mid Debit) × 100
-```
-
-**Breakeven.** Between the strikes, the spread's value at expiration equals
-`Long Strike − Underlying Price`. Setting that equal to the debit paid and
-solving for price gives:
-
-```
-Breakeven = Long Strike − Mid Debit
-```
-
-**Spread Delta.** Put deltas are negative. Selling the short put means we
-are short its delta:
-
-```
+Max Loss    = Mid Debit × 100
+Max Profit  = (Strike Width − Mid Debit) × 100
+Breakeven   = Long Strike − Mid Debit
 Spread Delta = Long Put Delta − Short Put Delta
-```
-
-This is only an approximation of the *current* position delta — delta
-itself changes as price and time change (gamma/theta), which v0.1 does not
-model.
-
-**Average IV.** A simple average of the two legs' quoted implied
-volatilities:
-
-```
-Average IV = (Long IV + Short IV) / 2
-```
-
-This is a simplification, not the combined position's true volatility.
-
-**Expected Move.** Treats IV as an annualized standard deviation of returns
-and scales it to the days remaining using the square-root-of-time rule:
-
-```
+Average IV   = (Long IV + Short IV) / 2
 Expected Move = Underlying Price × Average IV × sqrt(DTE / 365)
+z            = (Breakeven − Underlying Price) / Expected Move
+P(below breakeven) = NormalCDF(z)                         -- math.erf, exact
 ```
 
-**Z-score & probability.** Expresses breakeven as a number of standard
-deviations from the current price, then reads off the standard normal
-cumulative distribution function (CDF) at that z-score:
+Both debit conventions use the identical formula
+(`backend/app/calculations/bear_put_spread.py::debit_per_share`) fed
+different prices; only Mid Debit feeds Max Loss/Profit/Breakeven/the
+probability engine/Monte Carlo. The frontend mirrors every formula in
+TypeScript (`frontend/src/calculations/`), including a rational
+`normalCdf` approximation (Abramowitz & Stegun, error ≤1.5×10⁻⁷) since
+JS has no built-in `erf`.
+
+**Probability engine** (`app/calculations/probability_distribution.py`):
+splits the price axis into buckets (two open-ended tails so probabilities
+sum to exactly 1.0), gives each an exact area-under-the-normal-curve
+probability, attaches a P/L via the same payoff formula, and combines
+into an Expected Value — **≈ -$57.77/contract** for the example above,
+illustrating that a 45% win probability doesn't imply positive EV when
+the payoff is asymmetric (capped +$373 vs. -$427).
+
+**Monte Carlo** (`app/calculations/monte_carlo.py`): draws up to 100,000
+random expiration prices from the identical model and runs each through
+the same payoff formulas (numpy-vectorized) to report probability of
+profit/max-loss/max-profit, Expected Value/Return, median, percentile
+bands, and expected gain/loss. For a plain normal distribution this is
+strictly noisier than the closed-form answer — its value is as a
+cross-check (both should converge) and as the machinery a future
+non-normal distribution would actually need. Every simulated number is
+labeled *"...of N simulated outcomes..."*, never stated as a real-world
+probability.
+
+## 5. Financial assumptions and disclaimers
+
+- Educational tool. **Not financial advice.**
+- Ignores commissions/fees; assumes a simplified, symmetric, zero-drift
+  normal price distribution; does not model volatility skew/smile, early
+  exercise, or assignment.
+- Every probability/EV number is a *model output* under stated
+  assumptions, never presented as a real-world edge or forecast.
+- No trade execution, no brokerage connection, no autonomous trading
+  decisions, at any point in this project.
+
+## 6. What's implemented vs. not
+
+**Implemented:** the transparent calculator (debit/max-loss/profit/
+breakeven/delta/IV/expected-move/probability), the closed-form
+probability engine, Monte Carlo simulation, CSV option-chain import with
+an in-file long/short scanner, a swappable live/historical market-data
+provider layer (Alpaca/Massive/Schwab/CSV), real-time streaming quotes,
+historical-bar fetch/validate/quarantine/store/raw-audit, an opt-in
+unattended ingestion loop, Research v1 (hypothesis testing), and Feature
+Engine v1 (deterministic feature computation).
+
+**Not implemented, deliberately:** machine learning, authentication/user
+accounts, portfolio management, historical **options** data (equity bars
+only), a market-wide scanner across live symbols, a trade journal,
+**strategy backtesting** (simulated P&L/position/capital over time —
+different from Research v1, which only measures whether a pattern held
+historically), model calibration tracking, signal generation, paper
+trading, and live execution. None of these is scheduled work — each is
+a real future possibility gated behind the one before it (a trade
+journal needs persistent storage of real outcomes before model
+calibration is even askable; calibration needs to hold up before signal
+generation is meaningful; signals need a paper-trading track record
+before live execution is ever a live discussion) — but this repo does
+not commit to a timeline for any of it. Automated buy/sell
+recommendations are **permanently** out of scope at every one of those
+phases, including any of them that does get built — the tool's job
+stays "here's what matches your criteria," never "buy this." Live
+execution of a real trade with real capital, if it is ever built, is
+never something this assistant performs on your behalf — that action
+stays yours, deliberately, one trade at a time.
+
+## 7. Importing options data from CSV
+
+Upload a CSV export of an option chain, pick a long/short put from a
+table, and either get an instant client-side Spread Builder preview or
+click "Analyze Spread" to populate the same manual-entry form the rest
+of the app uses (byte-for-byte identical API response either way — see
+`test_csv_import_api.py::test_csv_derived_request_matches_manual_entry`).
+No live data, no network call beyond reading the file. Rows normalize
+into one broker-agnostic shape (`app/models/option_chain.py`); required
+columns (symbol/price/expiration/strike/type/bid/ask/delta/IV) are
+matched case-insensitively via an alias list and the whole file is
+rejected with a specific message if any are missing — never silently
+defaulted. A small in-file scanner computes every valid long/short
+combination and lets you filter by DTE/delta/max loss.
+
+## 8. Market data provider architecture
 
 ```
-z = (Breakeven − Underlying Price) / Expected Move
-Probability(below breakeven) = NormalCDF(z)
+                  +-- CSVProvider      (options chain, from an uploaded file)
+MarketDataProvider+-- AlpacaProvider   (equity bars/quotes; options chain placeholder)
+                  +-- MassiveProvider  (equity bars/quotes; options chain placeholder)
+                  +-- SchwabProvider   (equity bars/quotes, OAuth2; options chain placeholder)
+                          |
+                          v
+                 NormalizedChainResult / HistoricalBar / Quote
+                          |
+                          v
+                    calculator, storage, research, features
 ```
 
-The backend computes the normal CDF via `math.erf` (Python standard
-library, exact to machine precision). The frontend mirrors it with the
-Abramowitz & Stegun 7.1.26 rational approximation (max error ≈1.5×10⁻⁷),
-since JavaScript has no built-in `erf` — the formula is fully visible in
-`frontend/src/calculations/bearPutSpread.ts::normalCdf`, not a lookup table.
-
-**Payoff at expiration.** At any hypothetical expiration price:
-
-```
-Long Put Intrinsic  = max(Long Strike − Price, 0)
-Short Put Intrinsic = max(Short Strike − Price, 0)
-Spread Value = Long Put Intrinsic − Short Put Intrinsic
-P/L per share = Spread Value − Debit
-P/L per contract = P/L per share × 100
-```
-
-Because this payoff function is **piecewise linear** with exactly two
-breakpoints (the two strikes), the payoff chart only needs to evaluate 4
-points (two breakpoints plus two outer padding points) to draw the exact
-shape — see `backend/app/calculations/payoff_scenarios.py`.
-
-### Phase 2 — the probability engine
-
-Section 6 above collapses the whole distribution of possible outcomes into
-one number ("45.0% probability of finishing below breakeven"). Phase 2
-builds the actual distribution instead, in
-`backend/app/calculations/probability_distribution.py`:
-
-**1. Split the price axis into buckets.** Starting from the current price,
-lay down buckets `step` dollars wide (the same width used by the payoff
-table) out to roughly ±3 standard deviations — the classic "68-95-99.7"
-range. The two outermost buckets are left **open-ended** (their probability
-integrates out to ±infinity), so nothing past the edge of the grid is
-silently dropped.
-
-**2. Give each bucket an exact probability**, not a density estimate at one
-point — the *area* under the standard normal curve between the bucket's two
-z-score edges:
-
-```
-P(bucket) = NormalCDF(z_high) − NormalCDF(z_low)
-```
-
-Because the two tail buckets are open-ended, these probabilities always sum
-to **exactly 1.0** — the app surfaces this sum so you can check it yourself
-rather than trusting an approximation that merely lands "close to 100%".
-
-**3. Attach a P/L to each bucket** using the same `payoff_at_expiration`
-function from section 13/8 above, evaluated at each bucket's midpoint (or,
-for the two open tail buckets, at their one finite edge — exact here
-because this spread's payoff is already flat by the time price reaches
-±3 standard deviations away, past both strikes, for any realistic input).
-
-**4. Combine into an Expected Value** — the probability-weighted average
-P/L across every bucket:
-
-```
-EV = Σ P(bucket_i) × P/L(bucket_i)
-```
-
-For the graduation example this comes out to **≈ -$57.77 per contract** —
-a useful, slightly counter-intuitive lesson: a 45.0% chance of finishing
-profitable does **not** imply positive EV, because the profit and loss
-magnitudes here aren't symmetric (capped at +$373 one way, -$427 the
-other).
-
-**Why this EV is not a trading edge.** It's computed under the exact same
-simplifying assumption as section 6 — prices normally distributed around
-the *current* price (zero drift) with a standard deviation equal to the
-expected move from average IV. Real markets price options under a
-**risk-neutral** distribution, not this simplified real-world one, and that
-risk-neutral distribution typically has skew, fat tails, and a drift term
-this model ignores entirely. A positive or negative number here mostly
-reflects the shape of this simplified curve relative to the strikes, not a
-genuine statistical advantage — the UI repeats this caveat next to the
-number itself.
-
-The UI visualizes all of this in one combined chart
-(`frontend/src/components/DistributionChart.tsx`): a probability histogram
-(bars, colored green/red by whether that price is profitable) on the left
-axis, with the same piecewise-linear payoff line from the payoff chart
-overlaid on a right axis — so you can see, at a glance, how likely each
-profit or loss outcome is.
-
-### Phase 3 — Monte Carlo simulation
-
-Phase 2 gets an *exact* answer by integrating the normal distribution's CDF
-in closed form. Phase 3, in `backend/app/calculations/monte_carlo.py`,
-gets an *approximate* answer a completely different way: it draws a large
-number of random expiration prices from that same model and just counts
-what happened.
-
-**1. Draw random prices.** Using `numpy`'s random generator, draw
-`num_simulations` (1,000 / 10,000 / 100,000, selectable in the UI) prices
-from `Normal(current price, expected move)` — the identical distribution
-Phase 2 integrates exactly.
-
-**2. Run every draw through the same payoff formulas.** Each simulated
-price is put through the exact intrinsic-value / P&L formulas from section
-13 above (vectorized with numpy instead of a 100,000-iteration Python
-loop, but it's the same arithmetic, applied elementwise, not a different
-formula).
-
-**3. Summarize the resulting sample of outcomes**:
-
-- **Probability of profit** — the fraction of draws with P/L > 0.
-- **Probability of max loss / max profit** — the fraction of draws at or
-  beyond the long strike / at or below the short strike (the payoff's flat
-  regions).
-- **Expected Value** — the plain average P/L across all draws. Because this
-  is a *random* estimate (not an integral), it will differ slightly from
-  Phase 2's exact EV every time you re-run it — and should land closer to
-  it as `num_simulations` grows. Try switching between 1,000 and 100,000
-  simulations to watch this convergence happen.
-- **Expected Return** — Expected Value expressed as a percentage of the
-  debit paid (`EV / debit per contract`), i.e. return on the capital at
-  risk.
-- **Median and percentiles (5th / 25th / 75th / 95th)** of the simulated
-  P/L. With a capped payoff like this spread, percentiles often land
-  exactly on the max-loss or max-profit plateau, since a large chunk of
-  outcomes pile up there.
-- **Expected gain / expected loss** — the average P/L among just the
-  winning draws, and separately among just the losing draws.
-
-**Why run this at all if Phase 2 is exact?** For a plain normal
-distribution, Monte Carlo doesn't beat the closed-form answer — it's
-strictly noisier. Its value here is as a **correctness check** (two
-independently-implemented methods agreeing is reassuring) and as the
-foundation for later phases: once a future phase introduces a distribution
-that has no closed-form CDF (e.g. an empirically skewed one), simulation
-becomes the *only* way to get these numbers, and this is that machinery
-already in place and already tested.
-
-**Labeling discipline.** Every number in this section is a property of N
-random draws under a simplified model — not a fact about the real market.
-The UI states results as *"Based on the assumptions of this model, 45.1%
-of 100,000 simulated outcomes were profitable"* — never *"there's a 45%
-chance of profit."*
-
-## 9. Financial assumptions
-
-- This is an educational research tool. It does not provide financial
-  advice.
-- Calculations ignore commissions and fees.
-- The expected-move calculation is a simplified approximation (assumes a
-  symmetric, normal-ish price distribution derived from annualized IV).
-- The probability calculation assumes a simplified normal distribution.
-- The probability estimate is **not** equivalent to the exact probability
-  implied by the option chain.
-- The tool does not account for volatility skew/smile.
-- The tool does not model early exercise or assignment.
-- The tool does not execute trades, connect to a brokerage, or make
-  autonomous trading decisions.
-- **(Phase 2)** The Expected Value shown in the Probability Engine section
-  uses the same simplified, zero-drift normal distribution as the
-  probability calculation. It is **not** a real trading edge — see
-  [Phase 2 — the probability engine](#phase-2--the-probability-engine) for
-  why.
-- **(Phase 3)** Every number in the Monte Carlo section is a **simulated
-  model output**, not an observed fact — it describes what happened across
-  N random draws from the same simplified model as Phase 2, not what will
-  happen to the real underlying. Re-running the simulation gives slightly
-  different numbers each time; see
-  [Phase 3 — Monte Carlo simulation](#phase-3--monte-carlo-simulation).
-
-## 10. What is intentionally NOT implemented yet
-
-Machine learning, authentication, user accounts, portfolio management.
-All of that is out of scope for now — the roadmap in section 11 below
-has a phase for most of it — which is about correctness and
-transparency of a single, manually-driven calculation coming first.
-
-Historical OHLCV bar retrieval landed in v0.1.16 (equities only, TSLA/NVDA,
-Alpaca/Massive — see [15. Historical market data](#15-historical-market-data-v0116)
-below), a SQLite-backed storage layer for those bars landed in
-v0.1.17 (see [16. Historical bar storage](#16-historical-bar-storage-v0117)
-below), and v0.1.18 added an explicit validation/quarantine step plus an
-opt-in unattended ingestion loop (see
-[17. Bar validation, quarantine, and auto-ingestion](#17-bar-validation-quarantine-and-auto-ingestion-v0118)
-below) — but **backtesting itself** — running a strategy against that
-data and reporting simulated results — has not: this phase stops at
-"fetch, normalize, validate, and persist bars," on purpose, and does not
-run any calculation against them. Historical **options** data (as
-opposed to equity bars) is also still not implemented — same
-placeholder `get_chain()` situation described in section 13. Also still
-out of scope, deliberately: a market-wide scanner or trade journal built
-on top of stored bars.
-
-**One item is not "not yet" — it is permanently out of scope, at every
-phase, including the paper-trading and signal-generation phases below:**
-automated recommendation logic — ranking trades, flagging a "best" row, or
-any output stronger than "these structures match the criteria you
-defined."
-
-**Live execution of a real trade with real capital is not permanently
-out of scope, but it is not part of the near-term roadmap either, and it
-does not follow automatically from finishing Phase 9.** It is explicitly
-gated behind a real paper-trading track record showing consistent
-returns, and even then requires its own deliberate scope decision and
-safety architecture. See
-[Phase 10 — Live execution](#phase-10--live-execution-gated-not-automatic)
-in the roadmap.
-
-Note: Phase 2's "probability engine" and Phase 3's "Monte Carlo
-simulation" are two independent, cross-checked implementations of the same
-underlying model — Phase 2 integrates the normal distribution's CDF in
-closed form over price buckets, Phase 3 draws random samples from it. Both
-exist in this app; see
-[Phase 3 — Monte Carlo simulation](#phase-3--monte-carlo-simulation) above.
-True value from *simulation specifically* (as opposed to closed-form math)
-shows up once a future phase introduces a non-normal / skewed distribution
-that has no closed-form CDF to integrate — still future scope.
-
-## 11. Roadmap
-
-Each phase below is a planned direction, not yet implemented (except
-Phases 1-3, which are done). Phases are ordered so each one only becomes
-meaningful once the one before it exists — there's no point simulating
-100,000 prices (Phase 3) before there's a validated closed-form model to
-cross-check them against (Phase 2), and no point scanning real symbols
-(Phase 5) before there's a real data source to scan (Phase 4).
-
-**Phase 1 — Transparent calculator.** *(done)* Manually-entered bear put
-spread analysis with every formula visible. See sections 1-10 above.
-
-**Phase 2 — Probability engine.** *(done)* A discretized probability
-distribution (closed-form, via the normal CDF) combined with the payoff to
-produce an Expected Value. See
-[Phase 2 — the probability engine](#phase-2--the-probability-engine) above.
-
-**Phase 3 — Monte Carlo simulation.** *(done)* Stop reasoning about a
-handful of hypothetical prices and instead simulate a large number (e.g.
-100,000) of random expiration prices drawn from a price-distribution model,
-run each one through the exact same payoff formulas already used
-everywhere else in this app, and summarize the resulting distribution of
-outcomes: probability of profit, probability of max loss, probability of
-max profit, expected value, expected return, median P/L, and percentile
-bands (5th, 25th, 75th, 95th), plus expected gain and expected loss
-conditioned on winning or losing. See
-[Phase 3 — Monte Carlo simulation](#phase-3--monte-carlo-simulation) above.
-Because Phase 2's bucketed engine is already a closed-form, "exact" answer
-for a normal distribution, Monte Carlo doesn't replace it in the normal
-case — its real value shows up once the price model stops being a plain
-normal distribution (e.g. once Phase 4/5 bring in skewed or empirical
-distributions that have no closed-form CDF to integrate). Until then,
-Phase 3 doubles as a correctness check: a 100,000-path simulation
-under the *same* normal assumption should converge to the same numbers
-Phase 2 computes exactly. Every simulation-derived number must be labeled
-as a **model output**, not a fact — e.g. "Based on the assumptions of this
-model, 47.2% of simulated outcomes were profitable," never "there's a 47%
-chance of profit."
-
-**Phase 4 — Real options data.** *(the abstraction layer landed in
-v0.1.2 — see below and [§13](#13-market-data-provider-architecture-v012);
-a live data source has not, and isn't planned as an immediate next step)*
-Replace manual entry with a real market data source, architected so the
-*source* is swappable and never load-bearing for the rest of the app.
-v0.1.2 built exactly that seam: `MarketDataProvider`
-(`backend/app/providers/base.py`) is an interface every source
-implements, returning one common `NormalizedChainResult` regardless of
-how the data arrived. `CSVProvider` (`backend/app/providers/csv_provider.py`)
-is the first, fully working implementation — a thin wrapper around the
-unchanged v0.1.1 CSV ingestion pipeline. `AlpacaProvider`
-(`backend/app/providers/alpaca_provider.py`) gained real **equity**
-data in v0.1.4 — `get_historical_data()` and `get_latest_quote()` call
-Alpaca's Market Data API v2 for real bars/quotes (default feed `iex`,
-the free tier); its `get_chain()` (options data) is still a
-placeholder, since that's a separate, larger integration.
-`MassiveProvider` (`backend/app/providers/massive_provider.py`) — Massive
-is the Polygon.io rebrand — gained the same real **equity** data in
-v0.1.6, against Massive's own REST API (a single `MASSIVE_API_KEY`,
-sent as an `Authorization: Bearer` header); its `get_chain()` is a
-placeholder for the same reason Alpaca's is. `SchwabProvider`
-(`backend/app/providers/schwab_provider.py`) gained the same real
-**equity** data in v0.1.8, but is architecturally the odd one out —
-see the callout below. Its `get_chain()` is a placeholder for the same
-reason as the other two. `registry.py` maps provider names to classes
-and honors a `MARKET_DATA_PROVIDER` env var, so picking a provider is a
-config change, never a code change in the calculator or scanner.
-What's still missing, and is the actual point of this phase, is
-options-chain data from a live provider — the thing the calculator
-itself actually consumes. Equity data reached the frontend for the
-first time in v0.1.9: `GET /api/market-data/{symbol}/quote`
-(`backend/app/api/market_data.py`) asks a provider for
-`get_latest_quote()`, makes a second best-effort call to
-`get_historical_data()` for the most recent session's volume (neither
-Alpaca's nor Massive's quote/trade endpoints return cumulative daily
-volume), and returns the two combined as `LiveQuote`
-(`backend/app/models/market_data.py`) — a flat `{symbol, price, bid,
-ask, volume, timestamp, provider}` shape assembled by the route, not a
-provider contract (`Quote`, what every provider's `get_latest_quote()`
-actually returns, is unchanged since v0.1.9). `LiveQuotePanel`
-(`frontend/src/components/LiveQuotePanel.tsx`) renders that shape —
-used two ways as of v0.1.11: next to a CSV-imported chain's underlying
-price (so you can see at a glance how stale the CSV's price is), and
-standalone with `symbol="TSLA"` at the top of `CalculatorPage.tsx` as a
-minimal, always-visible proof that data actually flows Provider →
-Backend → Normalized Data → UI, independent of any CSV import. Both
-are deliberately a side-by-side reference, not an input the calculator
-depends on — picking a provider and fetching a quote never changes a
-form field or triggers a
-recalculation, same "investigate, don't auto-apply" principle the
-scanner already holds to. The application must not be architected
-around scraping any specific broker's UI (e.g. Thinkorswim) — that's a
-fragile, single implementation of the interface, not the interface
-itself.
-
-**Why Schwab is architecturally different from Alpaca/Massive.** Both
-of those use a static API key. Schwab uses OAuth2: an access token
-lasts 30 minutes and refreshes automatically (`SchwabProvider` does
-this itself, transparently); a refresh token lasts **7 days**, and
-renewing it requires an interactive login on Schwab's own site — your
-credentials, your MFA — that no code in this repo (and no AI assistant)
-performs for you. `backend/scripts/schwab_oauth_bootstrap.py` walks
-through that one step: it builds the login URL, you open it yourself
-and log in, then paste back the redirected URL so the script can
-exchange the authorization code for a refresh token. Re-run it roughly
-weekly. Also, unlike Alpaca/Massive's fully public API references,
-Schwab's official docs are gated behind an approved developer account,
-which wasn't available while building this — `schwab_provider.py`'s
-endpoint paths and most response field names are confirmed against
-multiple independent, real client libraries' source code (not just
-docs prose), but one field (the quote timestamp) is explicitly flagged
-in that file as best-effort/unconfirmed until validated against a real
-account.
-
-```
-                  ┌── CSVProvider        (done, v0.1.2 -- options chain)
-MarketDataProvider┤── AlpacaProvider     (v0.1.4 -- equity bars/quotes done; options chain placeholder)
-                  ├── MassiveProvider    (v0.1.6 -- equity bars/quotes done; options chain placeholder)
-                  ├── SchwabProvider     (v0.1.8 -- equity bars/quotes done, OAuth2; options chain placeholder)
-                  └── ...
-                          │
-                          ▼
-                 NormalizedChainResult
-                          │
-                          ▼
-          Quant engine (calculator, scanner, ...)
-```
-
-**Phase 5 — The scanner.** *(a first, tiny version done in v0.1.1 — see
-["The first tiny scanner"](#the-first-tiny-scanner) above)* The v0.1.1
-version searches every long/short combination in one already-uploaded CSV
-file, filtered by DTE/delta/max loss. The full Phase 5 vision goes further:
-once there's a real data source (Phase 4), let the computer search across
-*many symbols*, not just one uploaded file, for structures matching a
-hypothesis you define — e.g. DTE 20-45, long delta 0.55-0.70, short delta
-0.20-0.35, IV 30-60%, bid/ask spread < 10%, max loss < $500, reward/risk >
-0.75, probability of profit > 40%, expected value > $0 — and return a
-sortable table of candidates (symbol, strikes, debit, max profit, POP, EV)
-for you to *investigate*, each one run back through the same transparent
-calculator from Phase 1. The scanner's job is strictly "these structures
-satisfy the criteria you defined" — never "buy this." No autonomous
-recommendation logic, ever, in any phase — the v0.1.1 version already
-holds to this: no ranking, no highlighted "best" row, just a filtered,
-sortable list.
-
-**Phase 6 — Trade journal.** Every hypothetical or real trade gets
-recorded at entry (underlying, strategy, strikes, debit, IV, expected move,
-model-predicted probability, model-predicted EV, thesis, entry date) and
-then closed out at expiration (actual underlying price, actual P/L, and
-critically, the *error* between what the model predicted and what actually
-happened). This is the first phase that needs persistent storage — a
-real, if small, database — a deliberate departure from every earlier
-phase's "no database" constraint, because a journal's entire value is
-in accumulating history over 50-100+ trades.
-
-**Phase 7 — Model validation.** With enough journaled trades (Phase 6),
-ask whether the model is actually *calibrated*: when it says "60%
-probability," does that outcome actually happen roughly 60% of the time
-across many such predictions? A calibration table (predicted % vs. actual
-%) that tracks the diagonal closely is a well-calibrated model; one where,
-say, predicted 60% only pans out 43% of the time reveals the model is
-overconfident — a genuinely useful, humbling discovery that this whole
-project has been building toward. At this point the biggest risk to a
-trader using this tool may not be market direction at all, but
-overconfidence in the model's own probability estimates.
-
-**Phase 8 — Signal generation.** Once structures matching a hypothesis
-(Phase 5) can be checked against a calibrated model (Phase 7), define
-explicit, transparent criteria for when a matching structure becomes a
-labeled, journaled "signal" — still governed by the same rule the scanner
-already holds to: this stays "these structures satisfy the criteria you
-defined," never "buy this." No ranking signals against each other, no
-"best" signal, no confidence-weighted ordering. A signal is a documented
-hypothesis with the same probability/EV numbers already computed
-elsewhere in the app, timestamped and ready to be tracked through Phase 9
-— not a stronger claim than anything Phase 5 already makes.
-
-**Phase 9 — Paper trading.** A simulated account: signals from Phase 8
-get "entered" with no real capital, tracked against real subsequent
-market data (via the Phase 4 provider layer) the same way a Phase 6
-journal entry is, and closed out at expiration or exit. This is the first
-phase that models *holding* a position through time — price and time
-passing — rather than only its entry/exit snapshot. It is a simulator:
-no brokerage connection, no order routing, no real money at risk, at this
-phase or ever (see below).
-
-**Phase 10 — Live execution (gated, not automatic).** Not part of the
-near-term roadmap, and not something Phase 9 unlocks by itself. This
-phase only becomes a live discussion once a strategy has a real
-paper-trading track record (Phase 9) showing *statistically consistent*
-returns — not a handful of lucky trades — and even then, starting it is
-its own deliberate decision, made separately, not something that ships
-just because the code could technically support it by that point.
-
-If this phase is ever reached, it needs its own safety architecture, not
-just a brokerage API key: explicit per-trade confirmation from you before
-any real order is placed (no standing auto-trade rules, no execution
-triggered automatically off a signal alone), small/capped position sizing
-to start, and a kill switch. The no-ranking/no-recommendation rule from
-Phase 5 and Phase 8 still applies here too — the tool's job stays "here's
-what this signal implies, confirm if you want to act on it," never "the
-system decided to trade this for you."
-
-One more boundary worth stating plainly: this assistant will not place a
-real trade or move real capital on your behalf, in this project or any
-other, regardless of what the codebase supports. If Phase 10 is ever
-reached, placing the actual order is something you do yourself,
-deliberately, one trade at a time — the same way every earlier phase's
-"no autonomous decision" rule applies to the *analysis*, this applies to
-the *action*.
-
-## 12. Importing options data from CSV (v0.1.1)
-
-Manual entry works fine for one spread at a time, but typing in a whole
-option chain by hand doesn't. v0.1.1 adds a second way to fill in the same
-inputs: upload a CSV export of an options chain, pick a long and short
-put from a table, and click "Analyze Spread." **This is not a new live
-data source** — nothing is fetched automatically, no network call happens
-except reading the file you chose, and the file never leaves your machine
-except to your own local backend. It does now include a small scanner
-(see "The first tiny scanner" below) — but one that only searches the
-single file you already uploaded, not the market.
-
-**Workflow:** Upload CSV → select expiration → select long put → select
-short put → Analyze Spread. As soon as both legs are picked, a **Spread
-Builder** preview card appears instantly above the chain (Debit, Max Loss,
-Max Profit, Breakeven, Delta) — computed client-side, live, with no network
-call, using the same TypeScript formula mirror the rest of the app already
-has (`frontend/src/calculations/bearPutSpread.ts`). The point is the
-"constructing an instrument from the chain in front of you" feel: click BUY
-on one strike, SELL on another, and watch the spread's numbers appear —
-rather than filling out a form and pressing a button to find out what you
-built. Clicking Analyze Spread still exists for the full transparent,
-formula-by-formula breakdown (Trade Structure through Monte Carlo): it
-populates the exact same manual-entry form fields the rest of the app
-already uses (see
-`frontend/src/components/CsvImportWorkflow.tsx::optionToFormState`) and
-switches back to the Manual Entry tab, pre-filled and still editable —
-from that point on, CSV-derived and hand-typed inputs are indistinguishable
-to the rest of the app. **No financial formula is duplicated anywhere in
-this feature**: the CSV pipeline's only job is producing a normal
-`BearPutSpreadRequest`, which is posted to the exact same
-`/api/bear-put-spread` endpoint manual entry already used. A dedicated
-test (`test_csv_import_api.py::test_csv_derived_request_matches_manual_entry`)
-asserts the two response bodies are byte-for-byte identical.
-
-**The normalized model.** Regardless of the CSV's column names, every row
-is normalized into one shape (`backend/app/models/option_chain.py`):
-`symbol, underlying_price, expiration, dte, strike, option_type, bid, ask,
-last, volume, open_interest, implied_volatility, delta, gamma, theta,
-vega`. This model is deliberately kept separate from the CSV parser
-(`backend/app/ingestion/`) — it is the same "Normalized Chain" concept the
-Phase 4 roadmap diagram above describes, so a future data source (a
-different broker's export, eventually a live API) only needs to produce
-this same shape, not change anything downstream of it.
-
-**Required vs. optional columns.** A CSV needs recognizable columns for:
-`symbol, underlying price, expiration, strike, option type, bid, ask,
-delta, implied volatility`. Without every one of those, the whole file is
-rejected with a message naming exactly which column(s) are missing — never
-silently defaulted. `last, volume, open interest, gamma, theta, vega` are
-optional and become `null` when absent. Column names are matched
-case-insensitively against a small alias list per field (see
-`backend/app/ingestion/column_mapping.py`) — e.g. `implied_volatility`
-matches "Impl Vol", "IV", or "Implied Volatility".
-
-Beyond the column-level check, each **row** is validated independently
-(bid/ask ≥ 0, ask ≥ bid, strike > 0, underlying price > 0, IV ≥ 0, put
-delta in [-1, 0] / call delta in [0, 1], a parseable expiration date). A
-row that fails is skipped and reported in a row-level error list with its
-line number and reason; the rest of the file still imports. Selecting a
-long/short pair with the wrong strike ordering is caught by the exact same
-`BearPutSpreadRequest` validator manual entry already used (see section 3
-above) — there is no separate copy of that check for the CSV path.
-
-**Assumed CSV format.** This app has not been validated against a live
-Thinkorswim export (no verified sample was available while building it),
-so the column-name aliases and a few parsing rules below are documented
-*assumptions*, not a confirmed spec:
-- One row per contract ("tidy"/long format), not the mirrored
-  call-columns/strike/put-columns layout some chain UIs display on screen.
-- Implied volatility may be written as a percentage ("44.00%"), a
-  percentage-scale number without the sign ("44.00"), or an already-decimal
-  fraction ("0.44") — a value greater than 1.5 with no `%` sign is assumed
-  to be percentage-scale and divided by 100.
-- Expiration dates are tried against several common formats (`YYYY-MM-DD`,
-  `MM/DD/YYYY`, `DD-Mon-YYYY`, etc.), including stripping a
-  Thinkorswim-style trailing `"(35)"` DTE annotation (e.g. `"18 SEP 26
-  (35)"`) before parsing the date itself.
-- DTE is always computed from the expiration date and today's date on the
-  server — a DTE column in the file, if present, is ignored (so results
-  stay correct no matter when you import an old export).
-- A sample file matching these assumptions is at
-  `backend/tests/fixtures/sample_thinkorswim_chain.csv`.
-
-**What this is not.** No live market data, no brokerage connection, no
-scraping, no automatic scanning across symbols, no trade recommendations,
-no execution, no database (nothing from an uploaded file is persisted —
-re-uploading is required each session), no Monte Carlo/backtesting changes.
-This is strictly CSV → normalized options data → the existing calculator.
-
-### The Spread Builder
-
-Within "Browse Chain," as soon as both legs are picked a **Spread Builder**
-preview card appears instantly above the chain (Debit, Max Loss, Max
-Profit, Breakeven, Delta) — computed client-side, live, no network call,
-using the same TypeScript formula mirror the rest of the app already has
-(`frontend/src/calculations/bearPutSpread.ts`). The point is the
-"constructing an instrument from the chain in front of you" feel: click BUY
-on one strike, SELL on another, and watch the spread's numbers appear —
-rather than filling out a form and pressing a button to find out what you
-built. Clicking Analyze Spread still exists for the full transparent,
-formula-by-formula breakdown (Trade Structure through Monte Carlo).
-
-### The first tiny scanner
-
-A second mode, "Scan Combinations," examines **every possible long-put +
-short-put pairing within the file you already uploaded** — not a
-market-wide scan across symbols; that is still future scope (see Phase 5 in
-the roadmap below, which needs a real data source from Phase 4 first). This
-is the first place in the app doing something you couldn't reasonably do by
-hand: for a chain with 10 put strikes across 2 expirations, that's dozens
-of valid long/short combinations, each with its own debit, max loss, max
-profit, breakeven, and delta, computed all at once
-(`frontend/src/utils/spreadCombinations.ts`).
-
-Pairing rules mirror the existing single-pair validation exactly: both legs
-must be puts, both must share an expiration (spreading across expirations
-isn't a real bear put spread), and the long strike must exceed the short
-strike. Results can be filtered by DTE range, long delta range, short delta
-range, and a maximum-loss ceiling — matching the four criteria requested —
-and sorted by clicking any column header. Clicking **Analyze** on any row
-hands off to the exact same `onApply` → manual-entry-form → `/api/bear-put-spread`
-path every other entry method uses, so a scanned row's numbers are exactly
-as verified as a hand-typed one.
-
-**What this deliberately does not do**: rank, score, or recommend rows.
-The results table has no "best" column and no highlighting for any row over
-another — filtering only narrows what's shown; it never decides for you.
-This stays true to the same principle as every other probability/EV number
-in this app: the software finds structures matching a hypothesis you
-define, and you investigate them, exactly as described in the Phase 5
-roadmap entry below.
-
-## 13. Market data provider architecture (v0.1.2)
-
-**Why this exists.** Every earlier version of this app had exactly one
-way to get option data in: type it by hand, or upload a CSV. Phase 4 of
-the roadmap calls for real market data eventually, from more than one
-possible source (Alpaca, Massive, Schwab, ...). Rather than wire a
-specific API's response shape into the calculator, `backend/app/providers/`
-puts one interface — `MarketDataProvider` — between every data source and
-the rest of the app, so the calculator, the scanner, and any future phase
-never need to know or care whether a number came from a spreadsheet or a
-live broker feed.
-
-**Provider responsibilities** (`app/providers/*.py`): fetch data however
-that source works (parse a CSV, call a REST API, eventually stream a
-websocket), and translate it into this app's normalized shapes —
-`NormalizedChainResult` / `NormalizedOption` (`app/models/option_chain.py`)
-for an options chain, and `MarketBar` / `Quote` / `MarketTimestamp`
-(`app/models/market_data.py`) for historical bars and live underlying
-quotes. A provider owns everything source-specific: column-name aliases
-for a CSV, an API's auth scheme, its rate limits, its own response field
-names. None of that is allowed to leak past the provider's `get_chain()` /
-`get_historical_data()` / `get_latest_quote()` / `stream_quotes()` return
-values.
-
-**Quant engine responsibilities** (`app/calculations/`, `app/models/bear_put_spread.py`,
-`app/api/bear_put_spread.py`): take a `BearPutSpreadRequest` — plain
-floats (strike, bid, ask, delta, IV) — and compute. This code has zero
-imports from `app/providers/` or `app/ingestion/` (checked by
-`tests/test_providers.py::TestEngineHasNoCsvDependency`, which fails the
-build if that ever stops being true). It was already true before this
-provider layer existed — v0.1.1's CSV import built a `BearPutSpreadRequest`
-from imported contracts exactly the way manual entry does, proven by
-`test_csv_import_api.py::test_csv_derived_request_matches_manual_entry` —
-this phase's job was giving that separation a named interface, not
-inventing it.
-
-**Data flow, end to end:**
-
-```
-Provider (CSV today; Alpaca/Massive/Schwab as real integrations land)
-        │  parses/fetches source-specific data
-        ▼
-NormalizedChainResult / NormalizedOption   (app/models/option_chain.py)
-        │  frontend picks two legs, builds a BearPutSpreadRequest
-        ▼
-BearPutSpreadRequest                        (app/models/bear_put_spread.py)
-        │  posted to /api/bear-put-spread
-        ▼
-Quant engine (app/calculations/*.py)  →  debit, max loss/profit, breakeven,
-                                          probability engine, Monte Carlo
-```
-
-The engine never sees a provider or a `NormalizedOption` — only the
-already-validated floats in a `BearPutSpreadRequest`. That's the actual
-meaning of "the provider layer is an adapter": provider code goes from
-API/CSV to normalized data; engine code goes from normalized data to
-calculations; nothing skips the middle step.
-
-**How to add a real live provider** (once you're ready to move any of
-the three providers' still-placeholder `get_chain()` beyond a stub).
-`alpaca_provider.py`, `massive_provider.py`, and `schwab_provider.py`'s
-`get_historical_data()` / `get_latest_quote()` are real, worked
-examples of this exact process (v0.1.4, v0.1.6, v0.1.8):
-
-1. Implement the method(s) that provider supports (`get_chain()` and/or
-   `get_historical_data()` / `get_latest_quote()` / `stream_quotes()`) to
-   call the real API and map its response fields onto `NormalizedOption`
-   / `MarketBar` / `Quote`. No other file needs to change — not
-   `registry.py` (already wired), not the API routes, not the calculator.
-   Confirm the provider's actual endpoint/field names against its
-   published API reference rather than guessing — each provider's
-   module docstring names exactly which sources were checked. If the
-   official docs are gated (Schwab's are, behind an approved developer
-   account — see `schwab_provider.py`'s docstring for how that was
-   worked around by cross-checking multiple independent client
-   libraries' actual source code instead), explicitly flag whichever
-   fields couldn't be independently confirmed rather than presenting a
-   guess as settled fact — and let it fail loudly (a `KeyError`, not a
-   silently wrong value) if the guess turns out wrong.
-2. If the provider's auth is anything other than a static key (Schwab's
-   OAuth2 access/refresh-token cycle is the worked example), keep the
-   distinction sharp between what code can automate (ordinary token
-   refresh) and what requires a human in the loop (the initial and
-   every subsequent interactive login) — see `schwab_provider.py`'s
-   module docstring and `scripts/schwab_oauth_bootstrap.py`. No
-   provider in this codebase should ever attempt the interactive-login
-   part itself.
-3. Make the HTTP client an injectable constructor argument (see any
-   provider's `client` parameter) so tests can supply a mocked transport
-   (`httpx.MockTransport`) instead of making real network calls with
-   real credentials. If there's also a token-refresh cycle to test, make
-   the clock injectable too (see `schwab_provider.py`'s `now` parameter)
-   so token-expiry tests don't depend on real wall-clock timing.
-4. Add tests against that mocked transport covering: successful parsing,
-   the credentials-missing path raising before any request is sent, an
-   HTTP error propagating rather than being silently swallowed, and any
-   unit-conversion or field-mapping detail that could silently transpose
-   — see `tests/test_alpaca_provider.py`, `tests/test_massive_provider.py`,
-   and `tests/test_schwab_provider.py`.
-5. If you want to sanity-check it against your own real account outside
-   the test suite, add a manual (non-pytest, opt-in) script like
-   `scripts/alpaca_manual_check.py` / `scripts/massive_manual_check.py`
-   — or, for an OAuth provider, a one-time bootstrap script like
-   `scripts/schwab_oauth_bootstrap.py`.
-6. Update this README's Phase 4 entry and this section to say the
-   provider (or that specific method) is real, not a placeholder, and
-   to remove or resolve any "unconfirmed" caveats once validated
-   against a real account — Massive's fractional-volume bug and 403
-   entitlement handling (see git history around v0.1.7) are the
-   worked example of "confirm against a real account, then fix
-   what's wrong" actually catching something.
-
-**How credentials are handled.** `app/config.py` is the only module that
-reads `os.environ` directly — every provider takes credentials as
-constructor arguments, defaulting to `config.get_provider_credential(...)`
-if not passed explicitly (see `alpaca_provider.py` etc.). This means: (a)
-tests can pass fake credentials without touching the environment, (b)
-there's exactly one place to check for how a secret reaches the app, and
-(c) a missing credential raises a clear `RuntimeError` naming the expected
-env var — see `backend/.env.example` for the full list — rather than a
-provider silently authenticating with `None` or an empty string. Real
-credentials belong in a local, gitignored `backend/.env` (or your shell
-environment) — never committed, never pasted into a chat transcript, never
-hardcoded in a provider file. `MARKET_DATA_PROVIDER` selects which
-provider `registry.get_default_provider()` returns; the CSV upload route
-(`/api/csv-import`) always uses `"csv"` explicitly regardless of this
-setting, since there's nothing to "configure" about uploading a file.
-
-One credential is different in kind, not just mechanism:
-`SCHWAB_REFRESH_TOKEN` has no self-serve "generate a key" equivalent —
-it only exists after an interactive login on Schwab's own site, which
-no code in this repo performs (`scripts/schwab_oauth_bootstrap.py`
-builds the login URL and exchanges the resulting code for a token, but
-the login itself is a manual step, every time). This is a deliberate
-line: automating ordinary token refresh (an expired access token,
-inside a still-valid 7-day refresh window) is fine; automating a
-brokerage login is not, regardless of which AI assistant or script is
-doing the automating.
-
-**Cross-validating Alpaca vs. Massive (v0.1.10).** Once two
-independent providers implement the same capability, they can check
-each other — a real correctness signal neither provider's own mocked
-tests can give, the same "two independent implementations agreeing" logic
-this app already uses for Phase 2 vs. Phase 3. `scripts/cross_validate_providers.py`
-(opt-in, not run by pytest, same as the other manual-check scripts)
-pulls the same daily bars for TSLA/NVDA from both providers and diffs
-them. Run for real against both accounts: **every O/H/L/C value across
-16 shared trading days (8 days × 2 symbols) agreed within 0.15%** —
-strong evidence both providers are parsing and normalizing real data
-correctly, not just passing their own fixtures. Volume was expected to
-diverge sharply and did: Alpaca's free `iex` feed reported roughly
-2-4% of Massive's consolidated (all-exchange) volume for the same
-bars, consistent with IEX's known share of total US equity
-volume — a feed-coverage difference, not a bug, and the script labels
-it as such rather than flagging it. The latest-quote comparison
-gracefully skips Massive (not entitled on the free plan — see v0.1.7)
-rather than crashing, and still surfaces the same odd free-tier Alpaca
-quotes noted when that provider was first built (a `$0.00` ask for
-NVDA, an implausibly wide TSLA spread) — worth remembering before
-trusting `get_latest_quote()` for anything time-sensitive on a free
-plan, independent of which provider serves it.
-
-## 14. Real-time streaming market data (Alpaca v0.1.12, Massive v0.1.13/15)
-
-**Why this is a different mechanism from section 13's quote lookup.**
-`GET /market-data/{symbol}/quote` is request/response: the frontend
-asks, the backend answers once. This feature is push: TSLA's price on
-`CalculatorPage` updates on its own, with no button and no polling
-loop, for as long as the page is open. That needed a genuinely
-different transport, not just a new route -- see below.
-
-**Transport: a plain FastAPI/Starlette WebSocket, not a new
-dependency.** The app already had a request/response HTTP client
-(`fetch`) as its only frontend-backend mechanism; nothing resembling
-push existed yet. `uvicorn[standard]` already brings in the ASGI
-server's WebSocket support for free, so `GET (WebSocket)
-/api/market-data/stream` (`backend/app/api/market_data_stream.py`)
-needed no new server-side dependency. The one new dependency is
-`websockets` (added to `requirements.txt`), used as an *outbound*
-client -- the backend's own connection out to a provider's own
-streaming API, which is a different direction from the inbound server
-support FastAPI already had.
-
-**Scope, deliberately narrow:** Alpaca (v0.1.12) and Massive (v0.1.13)
-so far -- Schwab has no streaming integration yet -- and in practice
-only ever asked for TSLA (the frontend hardcodes `symbol=TSLA`; the
-route itself doesn't hardcode it, so adding a symbol picker later
-needs no backend change). No options data, no scanner changes, no
-calculation changes, no trade execution -- this phase is "the
-underlying's price updates itself," nothing more.
-
-**One shared reconnect loop, two provider-specific handshakes.** Alpaca
-and Massive speak completely different WebSocket protocols (different
-URLs, different auth message shapes, different message field names,
-even different timestamp units -- Alpaca sends RFC-3339 strings,
-Massive sends Unix milliseconds), but the *shape* of "connect,
-authenticate, subscribe, read messages, reconnect with backoff, tell a
-truly-fatal error from a worth-retrying one apart" is identical.
-`ReconnectingQuoteStream` (`app/streaming/base.py`) holds that shared
-loop and defines three provider-agnostic exceptions
-(`StreamCredentialsMissing`, `StreamAuthRejected`, `StreamTransientError`);
-`AlpacaQuoteStream` and `MassiveQuoteStream` each implement only
-`_connect_once()` -- the protocol-specific handshake -- and raise those
-same three exceptions to report what happened. This was a mid-flight
-refactor: `AlpacaQuoteStream` originally owned this loop directly
-(v0.1.12) and was generalized into the base class specifically so
-`MassiveQuoteStream` wouldn't have to duplicate it (and, with it, risk
-re-introducing the connection-limit bug described below in a second
-place).
-
-**Data flow, end to end.** Alpaca's path is a single WebSocket. Massive's
-path (v0.1.15) tries its own WebSocket first, and only falls back to
-REST polling if that fails fatally -- both still land in the same
-`LiveQuote` model and the same `StreamHub`, since `MassiveStream`
-satisfies the same `QuoteStream` structural contract
-(`app/streaming/base.py`) `AlpacaQuoteStream` satisfies by inheriting
-`ReconnectingQuoteStream`:
-
-```
-Alpaca                                    Massive
-wss://stream.data.alpaca.markets/v2/iex   wss://socket.massive.com/stocks
-        │                                          │
-        ▼                                          ▼
-AlpacaQuoteStream                         MassiveQuoteStream
-(app/streaming/alpaca_stream.py)          (app/streaming/massive_stream.py)
-        │                                          │
-        │                                    fatal? (e.g. not entitled
-        │                                    on this plan -- confirmed
-        │                                    live, see the callout below)
-        │                                          │
-        │                                          ▼
-        │                                  MassivePollingQuoteStream
-        │                                  polls the free-tier minute-bar
-        │                                  REST endpoint every 30s instead;
-        │                                  price/volume from the bar,
-        │                                  bid/ask always None (a bar has
-        │                                  neither)
-        │                                          │
-        │                          both wrapped by MassiveStream, which
-        │                          decides which one is currently live
-        │                                          │
-        └────────────────────┬─────────────────────┘
-                              ▼  every path ends here, as a LiveQuote
-                         StreamHub  (app/streaming/hub.py)
-                              │  one upstream connection per (provider, symbol)
-                              │  pair, fanned out to every connected browser tab
-                              ▼
-                    WebSocket route  (app/api/market_data_stream.py)
-                              │  relays {"type": "status", ...} / {"type": "quote", ...}
-                              ▼
-        useQuoteStream(symbol, provider)  (frontend/src/hooks/useQuoteStream.ts)
-                              │  owns the browser<->backend socket + its own
-                              │  reconnect/backoff; reconnects on provider change
-                              ▼
-                     LiveStreamPanel  (frontend/src/components/LiveStreamPanel.tsx)
-                          provider dropdown + status + auto-updating quote
-```
-
-**Two independent reconnection layers, on purpose, because there are
-two independent things that can fail:** the backend's connection to
-the provider (handled inside `ReconnectingQuoteStream.run()`,
-exponential backoff 1s→30s), and the browser's connection to *this
-app's own* backend (handled inside `useQuoteStream`, same backoff
-shape, independently). A browser tab waking from sleep doesn't mean
-the provider dropped; the backend restarting doesn't mean the
-browser's network is bad. Conflating them into one retry loop would
-make each failure harder to reason about, not easier.
-
-**A real bug this surfaced, found by testing against a real Alpaca
-account, not assumed:** restarting the backend process doesn't send
-Alpaca a clean WebSocket close, so Alpaca can keep treating the
-*previous* connection as live for a short window and reject the new
-one with `{"T": "error", "code": 406, "msg": "connection limit
-exceeded"}` -- even though the credentials are completely valid. The
-first version of `_authenticate()` treated *any* auth-stage error as
-"these credentials are wrong" and gave up permanently (a fatal
-`"error"` status the UI never recovers from without a full page
-reload). Fixed by checking Alpaca's specific error `code`: only `402`
-(auth actually failed) is now `StreamAuthRejected` (fatal); `406`
-(connection limit), `404` (login timeout), and `407` (slow client) are
-`StreamTransientError` (retried with the same backoff as any other
-disconnect) -- see `tests/test_alpaca_stream.py::TestAuthErrorCodeClassification`
-for the worked example, live-verified: killing and restarting the
-backend against a real Alpaca account reproduced the 406 immediately,
-and the fixed code showed "Disconnected -- retrying" and kept retrying
-with growing backoff, never landing on a stuck "Error."
-
-**Operational gotcha this bug hunt also surfaced, worth knowing before
-you go looking for a phantom bug of your own:** because Alpaca (and
-Massive) allow only one live connection per API key, an orphaned
-backend process left running from a previous session -- forgotten
-after `Ctrl-C` didn't fully kill a background job, for instance --
-will silently occupy that one slot forever. Your *current*, correctly-
-running backend then gets the exact same "connection limit exceeded"
-retry loop described above, and it looks identical to a real bug from
-the outside. If the stream panel won't connect and you're sure the
-credentials are right, check for a stray `uvicorn` process holding an
-established connection to the provider's streaming host before
-assuming the code is wrong (`lsof -nP -iTCP:443 | grep <provider's IP>`
-against the PID actually listening on your backend's port will tell
-you if a *different* process has the streaming socket open).
-`scripts/dev.sh stop` is the reliable way to avoid this in the first
-place -- it tracks the PID it started and stops exactly that one (and,
-as of the fix below, everything under it too).
-
-This exact failure mode happened in a real session and is where the
-above got found: `scripts/dev.sh stop` was, at the time, only killing
-the `uvicorn --reload` PID it tracked -- not the separate `multiprocessing`
-worker process reload mode spawns to actually run the app (confirmed
-via `ps`: that worker's command line is the generic
-`multiprocessing.spawn_main`, not anything grep-able like
-`app.main:app`, so it can only be found by PID relationship, not by
-pattern). `stop` reported success while that worker kept running,
-still holding a live Alpaca connection, and the *next* `start` then
-failed to reconnect with the same "connection limit exceeded" retry
-loop -- indistinguishable from a real bug without checking `lsof`.
-Fixed: `stop_one` now walks and kills the tracked PID's full descendant
-tree, not just the one PID (`scripts/dev.sh`'s `descendants_of()`).
-Separately, but found in the same session: `MASSIVE_API_KEY` sat in
-`backend/.env` the whole time but the running backend still reported
-it missing, because `app/config.py` deliberately never auto-loads
-`.env` (see its docstring) and this particular shell session had only
-ever exported the Alpaca vars, not the Massive one -- `scripts/dev.sh
-start` now sources `backend/.env` into the backend's environment
-itself if the file exists, so a value sitting in that file reliably
-reaches the process without depending on which vars happened to
-already be exported in whichever shell ran `dev.sh start`.
-
-**Massive's real-time WebSocket needs a paid plan -- confirmed live,
-not assumed, and surfaced honestly rather than half-built and left
-silently broken.** `massive.com/docs/websocket/overview` states
-WebSocket access "is available through all paid subscriptions" (not
-the free tier), consistent with this app's own `MassiveProvider`
-already finding `/v2/last/nbbo` and `/v2/last/trade` -- the REST
-equivalent of real-time quotes -- come back `403 NOT_AUTHORIZED` on a
-free plan (see section 13 above). Connecting live against this
-project's own Massive account confirmed it end to end: Massive accepts
-the connection and replies to the auth message with `{"ev":"status",
-"status":"auth_failed","message":"Your plan doesn't include websocket
-access. Visit https://massive.com/pricing to upgrade."}` --
-`MassiveQuoteStream._authenticate()` maps Massive's `"auth_failed"`
-status to `StreamAuthRejected` (the same fatal, non-retried exception
-Alpaca's bad-credentials case raises). Protocol details (connection
-URL, auth/subscribe message shapes, event field names) were confirmed
-against `massive.com/docs/websocket/*` and the official
-`massive-com/client-python` source, not guessed -- see
-`massive_stream.py`'s module docstring for exactly which source
-confirmed which detail. Even the *delayed* WebSocket
-(`wss://delayed.massive.com/stocks`) was tested live and got the same
-rejection -- this plan has no WebSocket path at all, delayed or
-real-time.
-
-**v0.1.15: rather than leave that as a dead end, `MassiveStream`
-(`massive_stream.py`) falls back to polling Massive's free-tier
-minute-bar REST endpoint instead of giving up.** `MassivePollingQuoteStream`
-calls the same `get_historical_data()` `MassiveProvider`'s already-
-confirmed-free bars use, on a 30-second timer, and normalizes the
-latest bar into a `LiveQuote` -- so a free-plan account now sees
-`LiveStreamPanel` show real, updating TSLA price/volume for Massive
-instead of a permanent `"Error"`. `MassiveStream` tries the real
-WebSocket first every time (including its normal retry/backoff on a
-*transient* failure) and only switches to polling once the WebSocket
-attempt ends fatally -- so upgrading the Massive plan later starts the
-real WebSocket working again with no code change, no manual reset,
-just the next fresh connection attempt.
-
-Two things this polling path is honest about, not silently glossing
-over:
-- **No bid/ask.** A bar has open/high/low/close/volume, never a bid or
-  ask -- `LiveQuote.bid`/`.ask` are `None` here (the model became
-  optional for exactly this case, v0.1.15), not a bar's close standing
-  in for both, which would misrepresent the bid-ask spread as zero.
-  `LiveStreamPanel` renders both as "not available" and the caveat line
-  under the quote card explains why.
-- **A real correction, not an assumption:** the first version of this
-  feature queried `start=end=today()` and claimed the data was
-  genuinely fresh with no artificial delay -- based on a test that only
-  ever queried a date whose trading session had *already fully ended*,
-  which proves nothing about a live session. Testing the actual
-  "today" query live surfaced two things: (1) `start=end=today()` alone
-  returns a flat `403` on this plan *regardless of whether data
-  exists* -- a *different* restriction from the real-time-quote one
-  above, confirmed by querying an empty Saturday (`200`, zero results)
-  against the literal current day (`403`, "Your plan doesn't include
-  this data timeframe") with everything else held constant; and (2) a
-  *range* that reaches into the current timeframe succeeds but comes
-  back with a top-level `"status": "DELAYED"` instead of `"OK"`. So
-  `_latest_bar()` always queries a trailing multi-day window, never a
-  single "just today" day, and this app does not claim to know the
-  actual delay magnitude during a live session (untested outside
-  market hours) -- only that Massive's own response says it's delayed,
-  and this code repeats that rather than a stronger claim.
-
-**Volume is honestly a different number here than section 13's.**
-`LiveQuote.volume` from the REST route is a best-effort *session*
-total (a historical-bar lookup). Real-time trade messages (both
-providers) carry only each individual trade's own size, not a running
-daily total, so the streamed `LiveQuote.volume` is the sum of trade
-sizes seen *since this WebSocket connection started* -- much smaller
-than the session total right after connecting, by design, not a bug.
-Both routes reuse the same `LiveQuote` field name because the *shape*
-the frontend consumes is identical; the two numbers are not meant to
-be compared directly, and `LiveStreamPanel` says so under the quote
-card.
-
-**How to test it locally:**
-1. Set `ALPACA_API_KEY_ID` / `ALPACA_API_SECRET_KEY` and/or
-   `MASSIVE_API_KEY` (same vars section 13 uses -- see
-   `backend/.env.example`) and start the backend and frontend
-   (sections 4-5, or `scripts/dev.sh start`).
-2. Open the app and look at the "Live stream" panel, directly below
-   the existing manual "Live quote" panel on `CalculatorPage`. Its
-   dropdown picks between Alpaca and Massive (only the two providers
-   that actually stream).
-3. With Alpaca selected, it should show "Connecting…" then "Connected"
-   within a couple of seconds (this alone proves the backend reached
-   and authenticated with Alpaca -- no frontend code path can fake
-   that status). During regular US market hours, TSLA's
-   price/bid/ask/volume and the "Last update" timestamp should change
-   on their own, with no interaction. Outside market hours, "Connected"
-   but "Waiting for the first tick…" is the correct, honest state --
-   the feed has nothing to send when no trades are happening, not a
-   broken connection.
-4. Switch the dropdown to Massive: on a free-tier Massive account it
-   should briefly show "Connecting…" with a detail naming why the
-   WebSocket is unavailable, then settle on "Connected" with a detail
-   explaining it's polling free-tier minute bars every 30s -- and
-   within one poll cycle, a real TSLA price/volume should appear with
-   Bid/Ask both "not available" (see the callout above for why that's
-   correct, not missing data). On a paid Massive plan with WebSocket
-   entitlement, it should behave exactly like Alpaca did in step 3
-   instead -- MassiveStream always tries the real WebSocket first.
-5. To see reconnection: stop the backend (`scripts/dev.sh stop` or
-   `Ctrl-C`) while the page is open -- the panel turns "Disconnected"
-   with a growing "retrying in Ns" countdown; start the backend again
-   and it reconnects on its own, no page reload needed. If it instead
-   gets stuck retrying "connection limit exceeded" well past when the
-   backend is confirmed back up, see the operational-gotcha callout
-   above before assuming something is broken.
-
-## 15. Historical market data (v0.1.16)
-
-**Scope, deliberately narrow.** Equities only, OHLCV bars only, TSLA/NVDA
-only (see `app/api/historical_data.py`'s `ALLOWED_SYMBOLS`), a
-configurable timeframe (`1m`/`5m`/`15m`/`1h`/`1d`) and start/end date,
-Alpaca or Massive. No historical **options** data (section 13's
-`get_chain()` placeholders are unchanged), no database, no backtesting,
-no scanner changes, no changes to any quantitative calculation. This
-phase stops at "ask a provider for bars, normalize them, return them" --
-what a future backtesting phase would build on top of, not that phase
-itself.
-
-**Reused the existing provider abstraction; nothing parallel.**
-`MarketDataProvider.get_historical_data()` (section 13) already existed
-and was already real for Alpaca/Massive/Schwab since v0.1.4/6/8 -- this
-phase's job was giving it its first actual HTTP route and pagination,
-not building a second way to fetch bars. `GET
-/market-data/{symbol}/history` (`app/api/historical_data.py`) validates
-the request, resolves a provider via the same `registry.get_provider()`
-every other route uses, translates this route's normalized timeframe
-vocabulary (`1m`/`5m`/.../`1d`) into each provider's own (Alpaca's
-`"1Min"`/`"1Hour"`/`"1Day"` strings; Massive's `(multiplier, timespan)`
-pairs), and returns `HistoricalBarsResponse` -- a flat, provider-
-independent shape (`HistoricalBar`: symbol/timestamp/open/high/low/
-close/volume/provider, `app/models/market_data.py`) built the same way
-`LiveQuote` already flattens `Quote` (section 13). The frontend consumes
-only this normalized shape, never a provider's raw JSON.
-
-**Pagination, added to both providers (a real bug found and fixed along
-the way).** Before this phase, `AlpacaProvider.get_historical_data()`
-and `MassiveProvider.get_historical_data()` each made exactly one
-request and silently returned only its first page -- fine for the
-manual check scripts' daily-bar use, wrong for an intraday timeframe
-over a real date range, which can span many pages. Both now loop --
-Alpaca via its `next_page_token`, Massive via its `next_url` -- capped
-at 50 pages so a misbehaving upstream can't loop forever. Building
-Massive's loop caught a real, would-have-shipped bug: `httpx.Client.get(url,
-params=X)` *replaces* `url`'s existing query string whenever `X` is not
-`None` -- even `{}` -- so the first version of this loop silently
-stripped `next_url`'s own `?cursor=...` and would have re-requested page
-1 forever against a real account. Fixed by passing `params=None` (not
-`{}`) when following `next_url`; see `massive_provider.py`'s
-`get_historical_data()` and the regression test in
-`tests/test_massive_provider.py::TestGetHistoricalDataPagination` that
-caught it via a mocked multi-page transport.
-
-**Errors and rate limits map to specific HTTP statuses**, matching
-section 13's `GET .../quote` convention exactly: unknown provider name
-or unsupported symbol/timeframe/date range -> 404/400, provider doesn't
-support historical data -> 501, missing credentials or a provider's own
-entitlement error -> 503, upstream 429 -> 429 (passed through, not
-swallowed), any other upstream HTTP error -> 502. No credentials are
-ever part of a request or response this route makes or returns.
-
-**The CSV-vs-provider comparison (`POST /market-data/history/compare`,
-`app/api/historical_comparison.py`) is the single most important test
-of this feature**, per the spec it was built against: upload a CSV of
-OHLCV bars, and diff it against a live provider request for the same
-symbol/timeframe/period. `app/ingestion/ohlcv_csv.py` parses the CSV
-(its own column-alias list -- open/high/low/close/volume/timestamp,
-plus an optional symbol column -- separate from `csv_normalizer.py`'s
-options-chain-specific columns, same "one alias list per data shape"
-reasoning `column_mapping.py` already documents). The comparison route
-reuses the exact same validated path `GET .../history` uses for the API
-side (`fetch_normalized_bars()`, factored out for exactly this reuse),
-aligns both sides by timestamp, and reports -- never auto-corrects --
-row count difference, which timestamps are CSV-only/API-only/matched,
-and the signed O/H/L/C/volume delta for every matched timestamp, plus
-headline max-diff numbers. See `app/models/historical_comparison.py`'s
-docstring for why there is deliberately no `passed`/`is_match` field
-anywhere in that response: deciding whether a given discrepancy matters
-is the reader's job, the same principle `scripts/cross_validate_providers.py`
-already holds to for provider-vs-provider comparisons.
-
-**This repo's own CSV fixture can't be used for that comparison, and
-that's worth stating plainly rather than glossing over.**
-`backend/tests/fixtures/sample_thinkorswim_chain.csv` -- the CSV
-referenced elsewhere in this README (section 12) -- is an **options-
-chain snapshot** for a placeholder underlying symbol ("MCL"): one point
-in time, strike/bid/ask/delta/IV columns, no OHLCV time series at all.
-It is not a bar export for TSLA/NVDA, so it cannot be fed through
-`/market-data/history/compare` for a literal same-symbol overlap test.
-The comparison route itself is generic -- any CSV of OHLCV bars for
-TSLA or NVDA over a real period works -- but exercising it with real
-numbers needs an actual bar export (e.g. one saved from a broker's chart
-export, or the output of `GET .../history` itself saved back to CSV),
-which nothing in this repo currently provides.
-
-**UI (`HistoricalDataPanel.tsx`, embedded on `CalculatorPage` below the
-existing live-data proof-of-concept, same "independent of the
-calculator" convention as `LiveQuotePanel`/`LiveStreamPanel`).** Provider
-(Alpaca/Massive), Symbol (TSLA/NVDA), Timeframe, Start/End date, "Fetch
-bars" -> bar count, first/last timestamp, first-rows/last-rows tables.
-A separate "Compare against CSV" control (reusing the same symbol/
-provider/timeframe/date selection) uploads a file to the route above and
-renders its full report: the headline counts, any CSV row-parse errors,
-and a per-timestamp diff table color-coded the same way the calculator
-already colors P/L (green/red for positive/negative).
-
-## 16. Historical bar storage (v0.1.17)
-
-**Database chosen: SQLite, via Python's stdlib `sqlite3` -- no new
-dependency.** This is a local, single-user, no-auth educational tool
-(section 1); a server-based RDBMS would mean a second process to
-install, configure, and keep running for a feature scoped to "persist
-bars, read them back." SQLite is a real relational database with real
-constraints (the UNIQUE index below is enforced by the engine) -- it
-ships with Python and stores everything in one plain file. Same
-judgment `app/config.py`'s own docstring already applies to skipping a
-settings library until the app outgrows `os.environ.get()`, extended
-here to skipping a database server and an ORM until this app outgrows
-one table. The file lives at `backend/data/historical_bars.db` by
-default (gitignored, created automatically on first save), overridable
-via `DATABASE_PATH` (see `.env.example`).
-
-**Schema -- one table:**
-```sql
-CREATE TABLE historical_bars (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    provider TEXT NOT NULL,
-    symbol TEXT NOT NULL,
-    timeframe TEXT NOT NULL,
-    timestamp TEXT NOT NULL,   -- ISO-8601 UTC
-    open REAL NOT NULL,
-    high REAL NOT NULL,
-    low REAL NOT NULL,
-    close REAL NOT NULL,
-    volume INTEGER NOT NULL,
-    created_at TEXT NOT NULL,  -- ISO-8601 UTC, set when the row is saved
-    UNIQUE (provider, symbol, timeframe, timestamp)
-);
-```
-`UNIQUE (provider, symbol, timeframe, timestamp)` is the natural
-identity of a bar. `provider` stays IN the key deliberately: Alpaca and
-Massive can (and do, per `scripts/cross_validate_providers.py`) report
-slightly different OHLCV for what's nominally "the same" bar, so both
-are kept as independent rows rather than one overwriting the other.
-
-**Storage/repository layer -- `app/storage/`, the only place SQL is
-written for this feature:**
-```
-Provider (app/providers/*.py)           API response -> HistoricalBar
-Storage  (app/storage/historical_bar_repository.py)  HistoricalBar -> database row, and back
-API routes (app/api/historical_storage.py)           call save_bars()/get_bars(), never write SQL
-```
-`app/storage/db.py` owns the SQLite connection (a new one per call,
-never a long-lived shared connection -- see its docstring for why) and
-schema creation. `app/storage/historical_bar_repository.py`'s original
-two functions, `save_bars()` (INSERT OR IGNORE, so re-saving an
-already-stored bar is a no-op, not an error -- see `SaveResult`'s
-`inserted`/`skipped_duplicates` split) and `get_bars()` (a plain SELECT
-by symbol/timeframe/provider/date-range, oldest-first), are both still
-exactly what they were in v0.1.17 -- unchanged, not just source-
-compatible. v0.1.18 added three more (`save_validated_bars()`,
-`save_rejected_bars()`, `get_quarantined_bars()` -- see section 17),
-but every function in this file is still HistoricalBar/ValidatedBar/
-RejectedBar in, never a raw `sqlite3.Row` or dict past this file's
-boundary. This repository never imports `app.providers` OR
-`app.ingestion` -- checked by
-`tests/test_historical_bar_repository.py::TestProviderIndependence`,
-the same "source text check catches an import" idiom
-`tests/test_providers.py::TestEngineHasNoCsvDependency` already uses
-for the calculator's provider-independence. (`app/api/historical_storage.py`
-does import `app.ingestion.bar_validation` as of v0.1.18 -- it's the
-repository specifically that stays independent, not every caller of it.)
-
-**One normalized shape end to end.** `HistoricalBar` (`app/models/
-market_data.py`, first introduced in v0.1.16 as GET `.../history`'s
-response shape) gained a `timeframe` field in v0.1.17 and is now what
-the storage layer saves and loads too -- the same object a live
-provider fetch returns is what a database save/load round-trips,
-verbatim (see `tests/test_historical_storage_api.py::TestExactWorkflow`,
-which asserts the loaded bars equal the originally fetched ones
-field-for-field). Nothing downstream of a provider -- this route, the
-storage layer, any future Quant Lab or scanner code -- can tell whether
-a `HistoricalBar` came from Alpaca, Massive, a CSV, or the database;
-they're all the identical shape.
-
-**Two routes, both in `app/api/historical_storage.py`:**
-- `POST /market-data/history/save` -- takes the bars a caller already
-  fetched (`{"bars": [...]}`), NOT symbol/start/end/provider. Saving
-  never re-fetches from a provider itself, and is never an automatic
-  side effect of a fetch -- it's the UI's explicit "Save to Database"
-  button, per this phase's spec, which asked for a deliberate save
-  action rather than persisting every request silently.
-- `GET /market-data/{symbol}/history/stored` -- returns the identical
-  `HistoricalBarsResponse` shape `GET .../history` does, so the
-  frontend renders "fetched live" and "loaded from database" results
-  with the same code. `provider` stays a required query param, same
-  reasoning as the schema's UNIQUE key: reading "TSLA daily bars"
-  without saying which provider's copy would be ambiguous once more
-  than one provider's bars for the same symbol/timeframe/period have
-  ever been saved.
-
-**UI -- "Historical Data Storage"**, a new block on `HistoricalDataPanel.tsx`
-below the existing fetch/compare controls, sharing the same
-Provider/Symbol/Timeframe/Start/End selection: **Fetch from Provider**,
-**Save to Database**, **Load from Database**, displaying provider,
-symbol, timeframe, bar count, first/last timestamp, and a storage-status
-line (e.g. "Saved: 10 bar(s) total -- 10 new, 0 already in the
-database." / "Loaded 10 bar(s) from the database -- alpaca was not
-contacted."). "Save to Database" is disabled until a fetch has bars in
-hand -- there's deliberately no way to save data this UI hasn't shown you.
-
-**Verified against real data, the exact workflow this phase's spec
-called for**: fetched real TSLA daily bars from Alpaca, saved them,
-confirmed all 10 rows in the actual SQLite file via `sqlite3` directly,
-loaded them back through the UI, and the loaded rows matched the
-fetched ones exactly. `tests/test_historical_storage_api.py::TestExactWorkflow`
-automates the full A-G scenario end to end, including the "provider now
-disabled" step: it swaps in a provider stub that raises on every call,
-proves the live-fetch route genuinely returns 503, and proves
-`GET .../history/stored` still returns the same 10 bars regardless --
-`app/api/historical_storage.py` never imports `registry.get_provider`
-at all, so there is nothing in that route capable of contacting Alpaca
-even if it wanted to.
-
-## 17. Bar validation, quarantine, and auto-ingestion (v0.1.18)
-
-Two additions on top of v0.1.17's storage layer, both about making the
-growing historical dataset trustworthy and self-sustaining rather than
-just append-only:
-
-**An explicit Validate step, between Normalize and Store.** Before
-v0.1.18, a bar went straight from a provider's response to a database
-row with only Pydantic's type checking in between (a real float, a real
-datetime -- never "does this make sense"). Now every bar passes through
-`app/ingestion/bar_validation.py::validate_bars()` first, whether it
-arrived via a human's "Save to Database" click
-(`POST /market-data/history/save`) or the auto-ingest loop below. Two
-severities:
-
-- **Hard (rejected, never stored):** a non-positive price, negative
-  volume, `high < low`, `open`/`close` outside `[low, high]`, a
-  timestamp more than 5 minutes in the future, or an exact duplicate
-  (same provider+symbol+timeframe+timestamp) appearing twice in the
-  same submitted batch.
-- **Soft (flagged, still stored):** arriving out of chronological order
-  within its own batch, an unusually large gap since the previous bar
-  in its series (>5x the timeframe's nominal interval), or an extreme
-  price move from the previous bar (>20% close-to-close).
-
-Every rule is a plain, explainable threshold — deliberately not a
-machine-learning anomaly detector; see that file's module docstring for
-the full checklist and the reasoning behind each threshold.
-
-**Rejected bars are quarantined, never silently dropped.** A new
-`quarantined_bars` table (`app/storage/db.py`, migrated into an existing
-v0.1.17 database file automatically via `PRAGMA table_info` — no manual
-migration step) logs every rejected bar with why it failed
-(`validation_errors`, a JSON array) and when
-(`ingested_at`) — an append-only audit log with no `UNIQUE` constraint
-of its own, so a bad bar recurring on a retry is logged again rather
-than silently collapsed. `historical_bars` itself gained two columns,
-`validation_status` (`valid`/`flagged`) and `validation_warnings` (a
-JSON array), so a flagged-but-stored bar's reason is visible on the row
-itself. `POST /market-data/history/save`'s response now reports
-`flagged`/`rejected_invalid`/`rejected` alongside the existing
-`inserted`/`skipped_duplicates`, and a new
-`GET /market-data/{symbol}/history/quarantined` route reads the
-quarantine table back (same symbol/timeframe/provider/date-range
-filter as `GET .../history/stored`).
-
-**Auto-ingestion: pulling bars on a schedule, not just on a click.**
-`app/ingestion/auto_ingest.py` polls every configured symbol/timeframe
-pair on a timer, running each one through the exact same
-fetch → validate → store path a manual save uses
-(`app/api/historical_data.py`'s `fetch_normalized_bars()` →
-`validate_bars()` → `save_validated_bars()`/`save_rejected_bars()`).
-Each cycle re-fetches a trailing window (`AUTO_INGEST_LOOKBACK_DAYS`,
-default 5 days) rather than tracking "where it left off" — safe because
-`save_validated_bars()`'s `INSERT OR IGNORE` makes re-submitting an
-already-stored bar a no-op, and it doubles as automatic gap-healing
-after a missed cycle or downtime. One pair failing (a rate limit, a
-network blip, a bad symbol) is caught, logged, and reported per-pair —
-it never aborts the rest of the cycle or crashes the loop.
-
-**Off by default.** Set `AUTO_INGEST_ENABLED=true` (plus real provider
-credentials — see `.env.example`) to turn it on; unset or any other
-value means the app never makes an unattended outbound call, which is
-also why a fresh checkout, a test run, and CI are all unaffected by
-this feature existing. `app/main.py` starts/stops the loop via a
-FastAPI `lifespan` context manager, tied to the app process's own
-start/stop — `AUTO_INGEST_SYMBOLS`, `AUTO_INGEST_TIMEFRAMES`,
-`AUTO_INGEST_PROVIDER`, and `AUTO_INGEST_INTERVAL_SECONDS` configure
-what it polls, from where, and how often.
-
-**Tests:** `tests/test_auto_ingest.py` covers the ingestion cycle
-(fetch/validate/save, dedup across repeated cycles, quarantine on
-rejection, per-pair failure isolation, and the loop's immediate-first-
-cycle + clean-shutdown behavior) with a stubbed provider — no real
-network call. `tests/test_historical_storage_api.py` and
-`tests/test_historical_bar_repository.py` cover the validation/
-quarantine wiring on the manual-save path; `save_bars()` itself is
-unchanged and still exercised exactly as it was in v0.1.17.
-
-## 18. Raw-ingestion storage (v0.1.19)
-
-A verification pass against the shipped v0.1.18 pipeline (see
-`tests/test_pipeline_end_to_end.py`) found one real architectural gap:
-normalization happened *inside* ingestion — `AlpacaProvider`/
-`MassiveProvider.get_historical_data()` and `ohlcv_csv.parse_ohlcv_csv()`
-both produced the canonical `HistoricalBar` shape directly — so the
-original provider JSON / CSV text was parsed and discarded, never
-persisted anywhere. v0.1.19 closes that gap with a new raw-storage
-stage, added on top of the existing pipeline without changing it:
+Every provider implements the same interface
+(`app/providers/base.py::MarketDataProvider`) and returns the same
+normalized shapes — picking one is a config change
+(`MARKET_DATA_PROVIDER` env var / `registry.py`), never a code change
+downstream. Alpaca and Massive use a static API key; **Schwab uses
+OAuth2** — a 30-minute access token it refreshes itself, and a 7-day
+refresh token that requires an interactive login only you can do
+(`scripts/schwab_oauth_bootstrap.py` walks through it; re-run weekly).
+None of the three has real options-chain data yet (`get_chain()` is a
+placeholder) — only equity bars/quotes are real. Live quotes
+(`GET /market-data/{symbol}/quote`) and real-time WebSocket streaming
+(`GET /market-data/stream`, Alpaca + Massive, with a REST-polling
+fallback for Massive accounts not entitled to the WebSocket) render as
+side-by-side reference panels — never an input the calculator applies
+automatically.
+
+## 9. Historical market data pipeline
 
 ```
 Alpaca / Massive / CSV upload
         |
         v
-  persist_raw_ingestion_safely()   <- NEW (app/storage/raw_ingestion_repository.py)
-        |                             never raises -- a storage failure here
-        v                             can't break a fetch that would have worked
-  existing parsing (unchanged)
+persist_raw_ingestion_safely()   -- raw_ingestions table, BEFORE parsing (never raises)
         |
         v
-  validate_bars()                  <- UNCHANGED (app/ingestion/bar_validation.py)
-   /                \
-  save_validated_bars()      save_rejected_bars()   <- UNCHANGED
-  -> historical_bars          -> quarantined_bars
+   normalize -> HistoricalBar
+        |
+        v
+   validate_bars()
+   /              \
+save_validated_bars()      save_rejected_bars()
+-> historical_bars           -> quarantined_bars
 ```
 
-**Where raw data is stored:** a new `raw_ingestions` table (`app/storage/db.py`),
-one row per ingestion *request* — one provider fetch call, or one CSV
-upload — not one row per bar. Columns: `batch_id` (an opaque UUID
-correlating a row to the request that produced it), `source`
-(`alpaca`/`massive`/`csv`), `symbol`, `timeframe` (the *source's own*
-vocabulary — Alpaca's `"1Day"`, Massive's `"day"`, not this app's
-normalized `"1d"` — see the schema comment for why), `source_start`/
-`source_end`, `ingested_at`, `content_type` (`json`/`csv`), `raw_payload`
-(the untouched response/file text), and `metadata` (a small JSON blob,
-e.g. page count). No `UNIQUE` constraint — like `quarantined_bars`,
-this is an append-only log: re-fetching an overlapping window (e.g.
-`auto_ingest.py`'s lookback) legitimately produces a second raw row for
-a real second request, not a duplicate to collapse away. Deliberately
-**not** shaped like `historical_bars`: forcing Alpaca's `o`/`h`/`l`/`c`/`v`
-or a CSV's original headers into this app's OHLCV columns would defeat
-the entire point of a raw stage, which is preserving the source's own
-representation, unparsed.
+**Fetch:** `GET /market-data/{symbol}/history` — TSLA/NVDA only, 1m
+through 1d, translated per-provider (Alpaca `"5Min"`, Massive
+`(5, "minute")`, ...). A CSV-vs-provider comparison route diffs an
+uploaded bar file against a live fetch without auto-correcting either
+side.
 
-**Where normalized data is stored:** unchanged from v0.1.17/18 —
-`historical_bars` (valid/flagged) and `quarantined_bars` (rejected), via
-`app/storage/historical_bar_repository.py`, which this change does not
-touch at all.
+**Validate:** hard rules (impossible OHLCV, in-batch duplicates) reject a
+bar to the append-only `quarantined_bars` audit table; soft rules
+(out-of-order arrival, unusual gaps, extreme moves) flag but still store
+the bar.
 
-**How raw data moves into the existing pipeline:** captured at the two
-places the *original* payload actually exists, before anything parses
-it:
-- `AlpacaProvider`/`MassiveProvider.get_historical_data()` accumulate
-  every raw HTTP page during pagination and persist them as one row
-  right before returning parsed `MarketBar`s. One hook point, and every
-  caller of `get_historical_data()` — the real `GET .../history` route,
-  the CSV-comparison route's live side, and `auto_ingest.py`'s polling
-  loop — gets raw capture automatically, with **zero changes needed to
-  any of them**.
-- `app/api/historical_comparison.py` persists the uploaded CSV's raw
-  text right after decoding it, before `parse_ohlcv_csv()` touches it —
-  the one production route that receives raw CSV content today (see
-  section 17 for why no route yet connects parsed CSV bars to
-  `historical_bars` — that gap is unchanged by this work).
+**Store:** `historical_bars`, keyed on `(provider, symbol, timeframe,
+timestamp)` since different providers can genuinely disagree on OHLCV
+for "the same" bar — `POST /market-data/history/save` /
+`GET .../history/stored`, a deliberate manual action, never an automatic
+side effect of fetching.
 
-Every real call site goes through `persist_raw_ingestion_safely()`, not
-the underlying `save_raw_ingestion()` directly: it catches and logs any
-failure instead of raising, so a full disk or a locked file can never
-turn a fetch/upload that would have succeeded into one that fails.
+**Raw audit:** the *original* provider JSON / CSV text is persisted
+(`raw_ingestions`, one row per fetch/upload request, not per bar) before
+any parsing happens — answers "what did the source literally give us"
+even for a record later quarantined.
 
-**How to retrieve raw data for auditing/reprocessing:**
-`app.storage.raw_ingestion_repository.get_raw_ingestions(source=...,
-symbol=...)` returns every raw row for a source (optionally narrowed to
-a symbol), oldest first — including rows whose bars were later entirely
-quarantined, since raw storage happens *before* validation. No new HTTP
-route was added for this (see "keep it simple" below) — a Python call,
-or a small script in the style of `scripts/alpaca_manual_check.py`, is
-the smallest appropriate way to answer "what did the provider/file
-literally give us when this record failed."
+**Auto-ingest:** an opt-in (`AUTO_INGEST_ENABLED=true`) background loop
+re-pulls a configured symbol/timeframe list on an interval, reusing the
+exact same fetch → validate → store path a manual click uses — off by
+default so a fresh checkout, test run, or CI never makes an outbound
+call.
 
-**What did NOT change, on purpose:** `app/ingestion/bar_validation.py`,
-`app/storage/historical_bar_repository.py`'s `save_bars()`/
-`save_validated_bars()`/`save_rejected_bars()`/`get_bars()`/
-`get_quarantined_bars()`, `app/api/historical_storage.py`'s two routes,
-and `app/ingestion/auto_ingest.py` are all byte-for-byte unchanged. No
-new HTTP endpoint, no second normalization system, no research/feature/
-backtesting code. The only new production files are
-`app/storage/raw_ingestion_repository.py` and one new table; the only
-other edits are ~15-line additions to two provider files and one route.
+## 10. What is intentionally NOT implemented yet
 
-**A real problem this surfaced, fixed as part of this change:** every
-`AlpacaProvider`/`MassiveProvider.get_historical_data()` call now writes
-to the historical-bars SQLite database as a side effect of raw capture.
-`tests/test_alpaca_provider.py`, `tests/test_massive_provider.py`, and
-`tests/test_historical_comparison_api.py` construct real provider
-instances and previously had no reason to isolate `DATABASE_PATH` —
-without a fix, running the test suite would have silently written real
-rows into a developer's actual `backend/data/historical_bars.db`. Each
-of those three files now has the same `isolated_db` autouse fixture
-`tests/test_historical_storage_api.py` already used, pointing
-`DATABASE_PATH` at a throwaway `tmp_path` file per test.
+See [6. What's implemented vs. not](#6-whats-implemented-vs-not) for the
+current summary. In more detail: Research v1 and Feature Engine v1
+(sections 19–20) measure and compute *inputs*, they do not simulate a
+trade — **strategy backtesting** (entry/exit, P&L, capital over time)
+still does not exist anywhere in this codebase. Historical **options**
+data, a live market-wide scanner, and a trade journal are also not
+implemented. Automated buy/sell recommendations are permanently out of
+scope, at every phase, including any future paper-trading or
+signal-generation work — the tool's job stays "these match your
+criteria," never "buy this." Live execution of a real trade is not
+planned and, regardless of what the codebase might someday support, this
+assistant will not place a real trade or move real capital on your
+behalf, ever.
 
-**Tests:** `tests/test_pipeline_end_to_end.py`'s `TestRawStorage` and
-`TestCsvRawStorageThroughTheRealRoute` classes cover: a raw row exists
-per real ingestion request; the payload preserves each source's actual
-field names (Alpaca's `o`/`h`/`l`/`c`/`v` under `"bars"`, Massive's
-under `"results"`, a CSV's own text verbatim) rather than the canonical
-schema; raw and normalized row counts differ (independently stored, not
-mirrors of each other); a bar that was later quarantined is still
-findable in its batch's raw payload; raw capture happens even when CSV
-parsing fails outright (422); and raw storage is deliberately NOT
-deduplicated across repeated real fetches while `historical_bars` stays
-deduplicated regardless. Every pre-existing assertion in this file
-(validation, normalization, historical storage, deduplication,
-idempotency, symbol separation, the `ALLOWED_SYMBOLS` asymmetry
-finding) passes unmodified — the existing pipeline was preserved, not
-rewritten.
+## 11. Real-time streaming
 
-**Remaining gap, unaffected by this change:** no production route
-connects parsed CSV bars to `historical_bars` — the CSV-comparison
-route still only diffs, and MCL-style data still has to be pushed
-through `POST /market-data/history/save` directly, as documented in
-section 17.
+`GET /market-data/stream` (WebSocket) relays live quotes from one
+upstream connection per `(provider, symbol)` pair — shared across every
+connected browser tab, since each provider allows only one live
+connection per API key — with automatic reconnect/backoff and state
+replay for a client that joins mid-stream. Alpaca streams natively over
+its own WebSocket; Massive falls back to REST polling (30s) for accounts
+without WebSocket entitlement, since a polled bar has no bid/ask, only a
+derived quote. `frontend/src/hooks/useQuoteStream.ts` owns the
+browser↔backend socket independently of the backend's own reconnect
+logic to the upstream provider.
 
----
+## 12. Historical bar storage
 
-## Project structure
+SQLite (`backend/data/historical_bars.db`, `DATABASE_PATH` env var),
+one connection opened and closed per call — a real relational database
+with a real `UNIQUE(provider, symbol, timeframe, timestamp)` constraint,
+not a settings-library-style abstraction, since this is a single-user,
+no-auth local tool with no meaningful connection-pooling need. See
+[9. Historical market data pipeline](#9-historical-market-data-pipeline)
+above for the full fetch → validate → store → audit flow, and
+[15](#15-research-v1)/[16](#16-feature-engine-v1) below for the two
+consumers built on top of it.
+
+## 13. Testing
+
+`cd backend && ./venv/bin/pytest` — 650+ deterministic tests, all against
+synthetic fixtures or mocked HTTP, no live provider credentials or
+network access required anywhere in the suite. Manual, opt-in scripts
+that DO hit real provider APIs with your own credentials
+(`scripts/alpaca_manual_check.py`, `massive_manual_check.py`,
+`cross_validate_providers.py`) are never run by pytest.
+
+## 14. Project structure
 
 ```
 backend/
   app/
-    main.py                        FastAPI app, CORS, router mount. v0.1.17 mounted historical_storage_router.
-                                    v0.1.18 added a `lifespan` context manager that starts/stops
-                                    app/ingestion/auto_ingest.py's background loop with the app process,
-                                    gated behind config.get_auto_ingest_enabled() (off by default)
-    config.py                      v0.1.2: the app's one os.environ touchpoint (provider selection + credentials).
-                                    v0.1.17 added get_database_path() (DATABASE_PATH, defaults to
-                                    backend/data/historical_bars.db) for app/storage/.
-                                    v0.1.18 added the AUTO_INGEST_* getters (enabled/symbols/timeframes/
-                                    provider/interval/lookback) for app/ingestion/auto_ingest.py
-    models/
-      bear_put_spread.py           Input models + validation
-      response.py                  Response models (formulas embedded)
-      monte_carlo.py               Phase 3: simulation request/response models
-      option_chain.py              v0.1.1: NormalizedOption + CSV import response models
-      market_data.py               v0.1.2: MarketBar/Quote/MarketTimestamp -- unused by CSV path today.
-                                    v0.1.11 added LiveQuote, the flat HTTP response shape (symbol/price/
-                                    bid/ask/volume/timestamp/provider) GET /market-data/.../quote returns.
-                                    v0.1.15: LiveQuote.bid/.ask became optional (None for the Massive
-                                    polling fallback's bar-derived quotes, which have no bid/ask at all).
-                                    v0.1.16: added HistoricalBar (flat HTTP shape GET .../history returns,
-                                    same MarketBar-flattening pattern as LiveQuote/Quote) + HistoricalBarsResponse.
-                                    v0.1.17: HistoricalBar gained a `timeframe` field -- it's now also what
-                                    the storage layer saves/loads, not just an HTTP response shape
-      historical_comparison.py     v0.1.16: response shapes for POST /market-data/history/compare -- see
-                                    that route's docstring for why there is deliberately no pass/fail
-                                    verdict field anywhere in this shape (numbers only, reader decides)
-      historical_storage.py        v0.1.17: SaveBarsRequest/SaveBarsResponse for POST .../history/save --
-                                    the stored-read route reuses HistoricalBarsResponse as-is, on purpose.
-                                    v0.1.18: SaveBarsResponse gained flagged/rejected_invalid/rejected
-                                    (+ RejectedBarInfo) and QuarantinedBarsResponse was added for
-                                    GET .../history/quarantined
-      validation.py                v0.1.18: ValidationStatus/ValidatedBar/RejectedBar/QuarantinedBarRecord --
-                                    shared shapes between app/ingestion/bar_validation.py (the producer) and
-                                    app/storage/ (the persister). Lives here, not in either of those
-                                    packages, because app/storage/historical_bar_repository.py is
-                                    contractually forbidden from importing app.ingestion (see
-                                    test_historical_bar_repository.py::TestProviderIndependence) -- this is
-                                    the neutral home both sides can import from
-    calculations/
-      stats.py                     normal_cdf
-      bear_put_spread.py           All core formulas, one function each
-      payoff_scenarios.py          Payoff table / chart point generation
-      probability_distribution.py  Phase 2: bucketed probability distribution + EV
-      monte_carlo.py               Phase 3: random simulation, percentiles, histogram
-    ingestion/                     v0.1.1: CSV parsing, kept separate from the normalized model
-      column_mapping.py            Broker-style column-name aliases -> normalized fields
-      value_parsing.py             Per-cell parsers (float/int/IV/option-type/date), never fabricate
-      csv_normalizer.py            Row-by-row validation -> NormalizedOption dicts + row errors
-      ohlcv_csv.py                 v0.1.16: OHLCV bar CSV parser (its own column-alias list, separate
-                                    from csv_normalizer.py's options-chain-specific one) -- backs the
-                                    CSV-vs-provider historical-data comparison route
-      bar_validation.py            v0.1.18: validate_bars() -- the explicit Validate step between Normalize
-                                    and Store (see README section 17). Hard rules (impossible OHLCV values,
-                                    in-batch duplicates) reject a bar to quarantine; soft rules (out-of-
-                                    order arrival, gaps, extreme moves) flag it but still store it. Called
-                                    by both POST .../history/save and auto_ingest.py -- never imports
-                                    app.storage, keeping the dependency one-directional
-      auto_ingest.py                v0.1.18: run_ingestion_cycle()/run_ingestion_loop() -- the unattended,
-                                    scheduled alternative to a human clicking "Save to Database". Reuses
-                                    app/api/historical_data.py's fetch_normalized_bars() rather than a
-                                    second way to call a provider. Off unless AUTO_INGEST_ENABLED=true;
-                                    started/stopped by app/main.py's lifespan
-    providers/                     v0.1.2: MarketDataProvider interface (Phase 4, data-source half)
-      base.py                      MarketDataProvider ABC + NormalizedChainResult; optional capability
-                                    methods (get_historical_data/get_latest_quote/stream_quotes)
-      csv_provider.py              CSVProvider -- thin wrapper around ingestion/csv_normalizer.py
-      alpaca_provider.py           v0.1.4: real get_historical_data/get_latest_quote (equity bars/
-                                    quotes, Alpaca Market Data API v2); get_chain (options) still a stub.
-                                    v0.1.16: get_historical_data() paginates via next_page_token instead
-                                    of silently returning only the first page.
-                                    v0.1.19: get_historical_data() also persists every raw page via
-                                    persist_raw_ingestion_safely() before parsing it -- see section 18
-      massive_provider.py          v0.1.6: real get_historical_data/get_latest_quote (equity bars/
-                                    quotes, Massive/Polygon.io REST API); get_chain (options) still a stub.
-                                    v0.1.16: get_historical_data() paginates via next_url -- caught a real
-                                    bug along the way (httpx params={} silently strips an existing URL's
-                                    query string; fixed with params=None) -- see README section 15.
-                                    v0.1.19: same raw-persist addition as alpaca_provider.py -- see section 18
-      schwab_provider.py           v0.1.8: real get_historical_data/get_latest_quote (equity bars/
-                                    quotes, Schwab Trader API, OAuth2 access-token refresh); get_chain
-                                    (options) still a stub -- see docstring for confirmed-vs-guessed fields
-      registry.py                  Provider-name -> class map + MARKET_DATA_PROVIDER-driven default
-    storage/                       v0.1.17: persisted historical-bar storage (see README section 16) --
-                                    the only package that writes SQL for market data
-      db.py                        SQLite connection (new one per call, no long-lived shared connection)
-                                    + schema creation (historical_bars table, UNIQUE provider+symbol+
-                                    timeframe+timestamp). v0.1.18 added validation_status/
-                                    validation_warnings columns (migrated into an existing v0.1.17 file via
-                                    PRAGMA table_info) and the quarantined_bars table (see section 17).
-                                    v0.1.19 added raw_ingestions (no migration needed -- a new table only,
-                                    CREATE TABLE IF NOT EXISTS handles a pre-v0.1.19 file the same as a
-                                    fresh one) -- see section 18
-      historical_bar_repository.py save_bars() / get_bars() -- HistoricalBar in, HistoricalBar out, never
-                                    a raw sqlite3.Row past this file's own boundary. Never imports
-                                    app.providers or app.ingestion -- checked by
-                                    test_historical_bar_repository.py::TestProviderIndependence.
-                                    v0.1.18 added save_validated_bars()/save_rejected_bars()/
-                                    get_quarantined_bars() -- save_bars() itself is unchanged.
-                                    v0.1.19: untouched -- raw storage is a separate repository/table
-      raw_ingestion_repository.py  v0.1.19: save_raw_ingestion()/persist_raw_ingestion_safely()/
-                                    get_raw_ingestions() -- the ONLY module that writes to raw_ingestions.
-                                    persist_raw_ingestion_safely() is what every real call site
-                                    (alpaca_provider.py, massive_provider.py, historical_comparison.py)
-                                    actually calls: never raises, so a raw-storage failure can't break
-                                    an otherwise-successful fetch/upload. See section 18
-    streaming/                     v0.1.12: backend-only real-time streaming (see README section 14)
-      base.py                      v0.1.13: ReconnectingQuoteStream -- the reconnect/backoff loop and the
-                                    three provider-agnostic exceptions (StreamCredentialsMissing/
-                                    StreamAuthRejected/StreamTransientError) both providers below share;
-                                    extracted from alpaca_stream.py once massive_stream.py needed the same
-                                    shape. v0.1.15 added the QuoteStream Protocol (run/stop/provider_name)
-                                    hub.py's STREAM_FACTORIES actually type against, satisfied by
-                                    composition (MassiveStream below) as well as by inheritance
-      alpaca_stream.py             One upstream WS connection to Alpaca's streaming API for one symbol --
-                                    auth, subscribe, "q"/"t" message normalization into LiveQuote;
-                                    distinguishes fatal (bad credentials, code 402) from retryable
-                                    (connection-limit/timeout, codes 404/406/407) auth failures
-      massive_stream.py            v0.1.13: MassiveQuoteStream -- same shape as alpaca_stream.py, Massive's
-                                    own protocol (wss://socket.massive.com/stocks, "Q"/"T" message
-                                    normalization, Unix-millisecond timestamps); "auth_failed" -> fatal,
-                                    confirmed live to mean "your plan doesn't include websocket access" on
-                                    this account. v0.1.15 added MassivePollingQuoteStream (polls the free-
-                                    tier minute-bar REST endpoint on a 30s timer -- no bid/ask, since a bar
-                                    has none) and MassiveStream (tries the WebSocket first, falls back to
-                                    polling only on a fatal WS error; what hub.py actually registers)
-      hub.py                       StreamHub -- one upstream connection per (provider, symbol) pair shared
-                                    by every connected browser tab (each provider allows only one live
-                                    connection per API key) + state replay for a client that joins after
-                                    the stream is already up
-    api/
-      bear_put_spread.py           Route handlers, calls calculations in sequence
-      csv_import.py                Upload -> CSVProvider.get_chain() -> return chain (no analysis math)
-      market_data.py               v0.1.9: GET /market-data/{symbol}/quote -- first route to call a
-                                    provider's get_latest_quote(); specific exception->HTTP status mapping
-                                    (ValueError->404, NotImplementedError->501, RuntimeError->503,
-                                    httpx.HTTPStatusError->502), never a blanket 500. v0.1.11 added a
-                                    second, best-effort get_historical_data() call for volume (a trailing
-                                    window, not strictly "today" -- empty on a weekend) and returns the
-                                    combined LiveQuote shape; volume-enrichment failures never fail the quote
-      market_data_stream.py        v0.1.12: GET (WebSocket) /market-data/stream -- this app's first
-                                    server-push route; relays app/streaming/hub.py's status + LiveQuote
-                                    frames to one browser tab. v0.1.13: provider checked against the hub's
-                                    own STREAM_FACTORIES map (Alpaca + Massive) instead of a hardcoded name
-      historical_data.py           v0.1.16: GET /market-data/{symbol}/history -- first route to call
-                                    get_historical_data() directly (not just as a quote route's volume
-                                    side-lookup); ALLOWED_SYMBOLS/ALLOWED_TIMEFRAMES scope fence (TSLA/
-                                    NVDA, 1m/5m/15m/1h/1d), normalized-timeframe -> per-provider-vocabulary
-                                    translation, same exception->HTTP-status mapping as market_data.py.
-                                    fetch_normalized_bars() factored out for historical_comparison.py to reuse
-      historical_comparison.py     v0.1.16: POST /market-data/history/compare -- uploads a CSV of OHLCV
-                                    bars (via ingestion/ohlcv_csv.py), diffs it against fetch_normalized_bars()'s
-                                    provider call for the same symbol/timeframe/period, reports row-count/
-                                    timestamp/OHLC/volume differences without auto-correcting any of them.
-                                    v0.1.19: persists the uploaded CSV's raw text (persist_raw_ingestion_safely(),
-                                    source="csv") right after decoding it, before parse_ohlcv_csv() runs --
-                                    see section 18
-      historical_storage.py        v0.1.17: POST /market-data/history/save (bars the caller already
-                                    fetched -> app.storage.historical_bar_repository.save_bars(), never a
-                                    second provider call) + GET /market-data/{symbol}/history/stored
-                                    (repository.get_bars() -> the identical HistoricalBarsResponse shape
-                                    GET .../history returns -- provider stays a required query param since
-                                    the storage layer's identity key includes it).
-                                    v0.1.18: POST .../history/save now runs bars through
-                                    bar_validation.validate_bars() before save_validated_bars() +
-                                    save_rejected_bars(); added GET .../history/quarantined
-                                    (repository.get_quarantined_bars())
-  scripts/
-    alpaca_manual_check.py         v0.1.4: opt-in, NOT run by pytest -- hits the real Alpaca API with
-                                    your own credentials to sanity-check TSLA/NVDA bars + quotes
-    massive_manual_check.py        v0.1.6: same idea, against the real Massive API
-    schwab_oauth_bootstrap.py      v0.1.8: ONE-TIME INTERACTIVE -- builds the Schwab login URL, walks
-                                    you through logging in yourself, exchanges the resulting code for a
-                                    refresh token. Re-run roughly every 7 days when it expires.
-    cross_validate_providers.py    v0.1.10: opt-in, NOT run by pytest -- diffs real Alpaca vs. Massive
-                                    bars/quotes for TSLA/NVDA; see README's cross-validation callout above
-  tests/
-    test_calculations.py           Pure-function unit tests + graduation example
-    test_validation.py             Input validation tests
-    test_api.py                    End-to-end API tests
-    test_probability_distribution.py  Phase 2: bucket probabilities, EV, tails sum to 1.0
-    test_monte_carlo.py            Phase 3: reproducibility, percentile ordering, convergence
-    test_csv_import.py             v0.1.1: column mapping, value parsing, row validation
-    test_csv_import_api.py         v0.1.1: upload endpoint + CSV-vs-manual-entry equivalence
-    test_providers.py              v0.1.2: interface conformance, placeholders, config-driven
-                                    selection, and a check that the engine imports neither
-                                    app.providers nor app.ingestion
-    test_alpaca_provider.py        v0.1.4: mocked-HTTP tests for real Alpaca bars/quotes (TSLA/NVDA).
-                                    v0.1.19: isolated_db fixture added -- get_historical_data() now writes
-                                    a raw-ingestion row as a side effect, so this file needs the same
-                                    throwaway DATABASE_PATH isolation test_historical_storage_api.py uses
-    test_massive_provider.py       v0.1.6: mocked-HTTP tests for real Massive bars/quotes (TSLA/NVDA),
-                                    incl. explicit ms-vs-ns timestamp and bid/ask-case regression tests.
-                                    v0.1.19: isolated_db fixture added, same reason as test_alpaca_provider.py
-    test_schwab_provider.py        v0.1.8: mocked-HTTP tests for real Schwab bars/quotes (TSLA/NVDA),
-                                    incl. OAuth2 access-token refresh/caching/re-refresh (injectable clock,
-                                    no real timing dependency) and per-credential missing-env-var checks
-    test_config.py                 v0.1.2: MARKET_DATA_PROVIDER + credential env-var reading
-    test_cross_validate_providers.py  v0.1.10: unit tests for pct_diff's divide-by-zero handling --
-                                    the script's real I/O is deliberately untested, same as the other
-                                    manual-check scripts
-    test_market_data_api.py        v0.1.9: mocked-provider tests for every exception->HTTP-status branch,
-                                    plus a second class proving the same mapping against the real registry
-                                    (no mocking) -- e.g. CSVProvider genuinely returns 501, unmocked.
-                                    v0.1.11 added a class proving volume enrichment is always best-effort
-                                    (null on any failure, never fails the quote itself)
-    test_alpaca_stream.py          v0.1.12: message normalization (bid/ask/price/volume merge, timestamp
-                                    parsing), and the fatal-vs-retryable auth error-code classification
-                                    that a real-account test run caught -- see README section 14
-    test_massive_stream.py         v0.1.13: same shape as test_alpaca_stream.py for Massive's protocol --
-                                    message normalization, millisecond-timestamp parsing, and the
-                                    "auth_failed" classification that a real-account test run confirmed
-                                    means "plan doesn't include websocket access" on this account
-    test_massive_polling_stream.py v0.1.15: MassivePollingQuoteStream (bar-derived quotes with null bid/
-                                    ask, dedup of an unchanged bar, fatal-vs-transient REST failure
-                                    classification -- with a fake MassiveProvider, no real network) and
-                                    MassiveStream (falls back to polling only on a fatal WS error, a
-                                    working WS never touches polling, stop() reaches both inner streams)
-    test_stream_hub.py             v0.1.12 (renamed from test_alpaca_stream_hub.py in v0.1.13 once the hub
-                                    stopped being Alpaca-specific): fan-out/lifecycle tests with a fake
-                                    stream factory -- one upstream connection per (provider, symbol) pair
-                                    regardless of subscriber count, independence across providers for the
-                                    same symbol, state replay for late joiners, teardown once the last
-                                    client unsubscribes
-    test_market_data_stream_api.py v0.1.12: WebSocket route tests (TestClient.websocket_connect) with the
-                                    hub swapped for a fake -- status/quote frame relay, default symbol,
-                                    unsupported-provider rejection. v0.1.13 added a Massive-provider case
-    test_historical_data_api.py    v0.1.16: mocked-provider tests for GET .../history -- symbol/timeframe/
-                                    date validation, per-provider timeframe-vocabulary translation, the
-                                    full exception->HTTP-status mapping (incl. 429 passthrough), plus a
-                                    real-registry class proving it against actual provider classes
-    test_ohlcv_csv.py              v0.1.16: OHLCV CSV parser tests -- timestamp format coverage (incl. the
-                                    naive-timestamp-assumed-UTC rule), column aliasing, row-level vs.
-                                    whole-file error handling
-    test_historical_comparison_api.py  v0.1.16: POST .../compare tests -- identical/diverging data, CSV-
-                                    only/API-only timestamps, wrong-symbol and out-of-range CSV rows
-                                    excluded (and noted), CSV parse errors surfaced without failing the
-                                    request, the same exception mapping as test_historical_data_api.py.
-                                    v0.1.19: isolated_db fixture added -- this route now persists a raw-
-                                    CSV row as a side effect, same reason as test_alpaca_provider.py
-    test_historical_bar_repository.py  v0.1.17: save_bars()/get_bars() against a throwaway tmp_path SQLite
-                                    file per test -- insertion, retrieval, duplicate protection, multiple
-                                    symbols/timeframes/providers not bleeding into each other, inclusive
-                                    date-range retrieval, oldest-first ordering, and TestProviderIndependence
-                                    (source-text check: this module never imports app.providers or
-                                    app.ingestion)
-    test_historical_storage_api.py v0.1.17: route tests for POST .../history/save and GET .../history/stored
-                                    (each with an isolated DATABASE_PATH per test), plus TestExactWorkflow --
-                                    the literal fetch -> save -> confirm -> load -> verify-match -> disable-
-                                    provider -> load-again scenario this phase's spec asked to be proven.
-                                    v0.1.18: added rejection/quarantine coverage -- an impossible-OHLCV bar
-                                    is rejected not stored, shows up in the save response's `rejected` list
-                                    and in GET .../history/quarantined, and a valid bar alongside a rejected
-                                    one in the same batch still saves the valid one
-    test_auto_ingest.py            v0.1.18: run_ingestion_cycle()/run_ingestion_loop() against a stubbed
-                                    provider (no real network call) -- fetch/validate/save, re-running a
-                                    cycle is a no-op for already-stored bars, an impossible-OHLCV bar is
-                                    quarantined not stored, one pair's provider failure is caught and
-                                    reported without stopping the rest of the cycle, and the loop runs its
-                                    first cycle immediately and stops cleanly when asked
-    test_pipeline_end_to_end.py    v0.1.18/19: the full-pipeline integration test -- real AlpacaProvider/
-                                    MassiveProvider parsing (mocked at the httpx transport layer only),
-                                    real CSV ingestion, real HTTP save/read/compare routes, real storage.
-                                    TSLA/NVDA/MCL each carry one deliberately invalid bar. Covers
-                                    ingestion, raw storage (added v0.1.19 -- see section 18), validation,
-                                    normalization, historical storage, timestamp consistency, dedup,
-                                    idempotency, symbol separation, and the ALLOWED_SYMBOLS read/write
-                                    asymmetry finding (POST .../save is symbol-agnostic; the GET routes
-                                    are not)
-    fixtures/sample_thinkorswim_chain.csv  v0.1.1: example chain export -- an OPTIONS-CHAIN snapshot
-                                    (underlying "MCL"), not an OHLCV bar time series; cannot be used as-is
-                                    with the v0.1.16 historical-data comparison route -- see README section 15
-  requirements.txt
-  pytest.ini
-  .env.example                     v0.1.2: documents every provider env var; backend/.env is gitignored
+    main.py             FastAPI app, CORS, router mounts, auto-ingest lifespan
+    config.py            The one os.environ touchpoint (provider creds, DB path, auto-ingest settings)
+    models/               Pydantic request/response + domain shapes, one file per concern
+    calculations/          Pure math: bear put spread, probability distribution, Monte Carlo, stats
+    ingestion/              CSV parsing + normalization + bar validation
+    providers/               MarketDataProvider + Alpaca/Massive/Schwab/CSV implementations
+    storage/                 SQLite schema + one repository per table family (bars, raw, research, features)
+    streaming/                 Reconnecting WebSocket streams + the per-(provider,symbol) hub
+    research/                   Research v1 -- pure condition/outcome engine (see section 19)
+    features/                   Feature Engine v1 -- pure feature computation (see section 20)
+    api/                         One router per route group, mounted in main.py
+  scripts/                Manual/opt-in real-API checks, Schwab OAuth bootstrap, dev.sh
+  tests/                  One test file per module above, all deterministic/offline
 frontend/
   src/
-    types/                         TS types mirroring backend schemas
-      csvImport.ts                 v0.1.1: NormalizedOption / CsvImportResponse types
-      marketData.ts                v0.1.11: LiveQuote type (mirrors backend's LiveQuote -- the flat
-                                    response shape, not the provider-facing Quote model). v0.1.12 added
-                                    StreamMessage (status/quote WebSocket frame union). v0.1.13 added
-                                    StreamProvider ("alpaca" | "massive" -- narrower than LiveQuoteProvider,
-                                    since Schwab doesn't stream). v0.1.15: bid/ask became number | null
-                                    (the Massive polling fallback's bar-derived quotes have neither).
-                                    v0.1.16 added HistoricalBar/HistoricalBarsResponse/
-                                    HistoricalComparisonResponse (mirroring the backend shapes exactly)
-                                    and the HistoricalDataProvider/HistoricalDataSymbol/Timeframe unions.
-                                    v0.1.17: HistoricalBar gained a `timeframe` field; added SaveBarsResponse
-    calculations/                  TS mirror of the backend formulas
-    utils/
-      optionToFormState.ts         v0.1.1: NormalizedOption pair -> BearPutSpreadFormState (shared)
-      spreadCombinations.ts        v0.1.1: tiny scanner -- all valid combos + filtering
-    api/client.ts                  Fetch wrapper + error formatting + importCsv() + getLiveQuote();
-                                    exports API_BASE so the streaming hook derives its ws:// URL from
-                                    the same origin instead of hardcoding it a second time. v0.1.16 added
-                                    getHistoricalBars() + compareHistoricalCsv() (multipart upload).
-                                    v0.1.17 added saveHistoricalBars() + getStoredHistoricalBars()
-    hooks/
-      useQuoteStream.ts            v0.1.12 (as useAlpacaQuoteStream.ts, renamed + parameterized by
-                                    `provider` in v0.1.13 once Massive needed the same hook): owns the
-                                    browser<->backend WebSocket -- status/quote state, its own
-                                    reconnect/backoff, independent of the backend's reconnect to the
-                                    upstream provider (see README section 14 for why there are two of these)
-    components/                    One component per UI section
-      DistributionChart.tsx        Phase 2: probability histogram + payoff line, combined
-      DistributionTable.tsx        Phase 2: full bucket table
-      ProbabilityEngineSection.tsx Phase 2: section wrapper, EV formula + disclaimer
-      MonteCarloSection.tsx        Phase 3: run controls, stats, percentiles, sample paths
-      MonteCarloHistogramChart.tsx Phase 3: empirical outcome histogram
-      CsvImportWorkflow.tsx        v0.1.1: upload -> select -> Analyze Spread
-      OptionChainTable.tsx         v0.1.1: chain table with call/put filter + long/short selection
-      SpreadBuilderPreview.tsx     v0.1.1: instant client-side Debit/Max Loss/Profit/Breakeven/Delta
-      SpreadScanner.tsx            v0.1.1: tiny scanner UI -- filters, sortable results, Analyze
-      LiveQuotePanel.tsx           v0.1.9: provider select + fetch button -- first UI surface for
-                                    Alpaca/Massive/Schwab data; never feeds the calculator, purely a
-                                    side-by-side reference. Used two ways as of v0.1.11: embedded next to
-                                    a CSV chain's underlying price (staleness check), and standalone with
-                                    symbol="TSLA" on CalculatorPage (minimal, always-visible pipeline proof).
-                                    v0.1.15: Bid/Ask render "not available" when null, same as Volume already did
-      LiveStreamPanel.tsx          v0.1.12: no fetch button -- renders useQuoteStream's status (Connecting/
-                                    Connected/Disconnected/Error) + auto-updating TSLA quote + "last update"
-                                    time. Separate from LiveQuotePanel on purpose (push vs. click-to-fetch);
-                                    both sit side by side on CalculatorPage. v0.1.13 added a provider
-                                    dropdown (Alpaca/Massive) that reconnects the stream on change. v0.1.15:
-                                    Bid/Ask render "not available" when null (the Massive polling fallback),
-                                    and the caveat line under the quote card switches wording based on
-                                    whether bid/ask are present, rather than assuming which provider is active
-      HistoricalDataPanel.tsx      v0.1.16: Provider/Symbol/Timeframe/Start/End controls -- "Fetch bars"
-                                    (bar count, first/last timestamp, first-rows/last-rows tables) and
-                                    "Compare against CSV" (uploads a file, renders the full comparison
-                                    report: headline counts, CSV row errors, per-timestamp diff table).
-                                    Never touches the calculator, same "investigate, don't auto-apply"
-                                    principle as LiveQuotePanel/LiveStreamPanel. v0.1.17 added a
-                                    "Historical Data Storage" block (own result/status state) reusing
-                                    the same controls -- Fetch from Provider / Save to Database / Load
-                                    from Database, with a storage-status line; "Save" is disabled until
-                                    a fetch is in hand
-    pages/CalculatorPage.tsx       Composes the page, owns form state; v0.1.11 added the standalone
-                                    TSLA LiveQuotePanel instance, always visible above the calculator.
-                                    v0.1.12 added LiveStreamPanel directly below it. v0.1.16 added
-                                    HistoricalDataPanel in its own section below the live-data one
-    App.tsx, main.tsx, index.css
-scripts/
-  dev.sh                          v0.1.5: start/stop/restart/status for backend + frontend together.
-                                   v0.1.13: sources backend/.env into the backend's environment if present,
-                                   and stop kills the tracked PID's full descendant tree (not just that one
-                                   PID) -- see README section 14's operational-gotcha callout for the real
-                                   session that found both gaps
+    types/                TS mirrors of backend schemas
+    calculations/          TS mirror of the backend formulas (bearPutSpread.ts, incl. normalCdf)
+    utils/                 CSV-selection -> form state, the in-file scanner
+    api/client.ts          Fetch wrapper; derives ws:// URL from the same origin as http(s)
+    hooks/useQuoteStream.ts  Owns the browser<->backend WebSocket + its own reconnect/backoff
+    components/             One component per UI section (calculator, CSV import, live quote/stream, historical data)
+    pages/CalculatorPage.tsx  Composes everything, owns form state
+scripts/dev.sh          start/stop/restart/status for backend + frontend together
 ```
+
+For exactly which file changed in which version and why, see
+[`BUILD_LOG.md`](BUILD_LOG.md) — that file is the detailed,
+chronological record; this README describes current behavior only.
+
+## 15. Research v1
+
+A hypothesis-testing engine on top of `historical_bars`: define a
+`Condition` (`metric`/`operator`/`threshold` — v1 supports one metric
+shape, `"{N}m_return"`, and five operators `< <= == >= >`) and an
+`Outcome` (`"forward_return"`, `horizon_minutes`, `operator`,
+`threshold`) as an `Experiment`, run it, and get back every individual
+qualifying `ExperimentEvent` plus aggregate `ExperimentResults`
+(success rate, average/median/min/max/std-dev of the outcome — `None`,
+never a fabricated `0.0`, when there isn't enough data).
+
+```
+normalized historical_bars -> app/research/engine.py::run_experiment() -> ExperimentEvent[] + ExperimentResults
+```
+
+The engine (`app/research/`) is pure computation, no I/O: it walks the
+bar series once, forward, and the condition at each bar only ever reads
+bars up to and including that bar — the entire no-look-ahead guarantee.
+Re-running an experiment (`POST /research/experiments/{id}/run`) deletes
+and re-inserts its events rather than appending, so results stay
+reproducible against an unchanged dataset. Routes:
+`POST /research/experiments` (create), `GET /research/experiments`
+(list), `GET .../{id}` (retrieve), `GET .../{id}/events` (every
+individual signal, not just the aggregate), `POST .../{id}/run`.
+
+**Not implemented, on purpose:** any condition/outcome shape beyond the
+two above, simulated P&L/position/capital (backtesting), ML/parameter
+optimization, paper trading, multi-symbol or multi-condition experiments.
+
+**Tests:** `tests/test_research_*.py` (88 tests) — condition/outcome
+math, event creation, success/failure classification, aggregate stats
+(incl. explicit zero/one-observation handling), no-look-ahead,
+date-range/symbol filtering, persistence, and reproducibility.
+
+## 16. Feature Engine v1
+
+A deterministic feature-computation layer on top of the same
+`historical_bars` dataset — transforms each bar into a fixed
+`historical_features` record for Research (or any future consumer) to
+read rather than recompute:
+
+- **PRICE:** `return_5m/15m/30m/60m`
+- **VOLUME:** `volume`, `relative_volume` (time-of-day-aware historical
+  baseline), `volume_acceleration`
+- **VOLATILITY:** `realized_volatility` (20-bar rolling log-return
+  stdev, annualized), `atr` (14-bar), `volatility_ratio`,
+  `volatility_percentile` (252-trading-session rolling history)
+- **MARKET CONTEXT:** SPY/QQQ returns + relative strength at the same
+  four horizons — TSLA/NVDA by default; a symbol outside that set (e.g.
+  MCL) gets none unless explicitly configured in
+- **PRICE POSITION:** `vwap_distance`, `ma20_distance`, `ma50_distance`,
+  `intraday_range_position`
+
+Every leaf value is `float | None` — `None` for insufficient history, a
+missing bar inside a required window (verified by exact timestamp
+contiguity, not just array position), or a zero denominator, never a
+fabricated `0.0`. "Session" (for VWAP/session-range/time-of-day
+matching) is the NY-local calendar date of a bar's timestamp
+(`app/features/session.py`, stdlib `zoneinfo`, no new dependency) — a
+documented simplification, not strict 9:30–16:00 ET exchange hours,
+since the data carries no extended-hours flag.
+
+```
+normalized historical_bars (+ SPY/QQQ, for eligible symbols)
+        -> app/features/engine.py::compute_features()
+        -> FeatureRecord[] (one per bar) -> historical_features table (INSERT OR REPLACE on recompute)
+```
+
+Routes: `POST /features/compute` (fetch, compute, persist),
+`GET /features/{symbol}` (read back).
+
+**Not implemented, on purpose:** any feature beyond the fixed list
+above, per-symbol trading calendars (annualization is applied uniformly
+using the standard 252-day/390-minute convention).
+
+**Tests:** `tests/test_feature_*.py` (123 tests) — every feature
+calculation, insufficient-history/missing-bar/zero-denominator behavior,
+timestamp alignment, no-look-ahead, TSLA/NVDA market context, MCL
+exclusion unless configured, persistence/retrieval, and deterministic
+recomputation.
 
 ## Known limitations
 
-- `npm audit` flags a moderate/high advisory in `esbuild` (bundled by
-  Vite 5), which allows any website to query the **local dev server**
-  while it's running (GHSA-67mh-4wv8-2f99). It does not affect production
-  builds (`npm run build` output is static files with no dev server). A
-  fix requires Vite 7/8, a bigger jump than v0.1's "keep it simple" scope
-  calls for; upgrading is a reasonable v0.2 task.
-- The frontend's `normalCdf` (Abramowitz & Stegun approximation) and the
-  backend's `normal_cdf` (`math.erf`, exact) can differ by a vanishingly
-  small amount (≤1.5×10⁻⁷) — invisible at the 1-decimal-percent precision
-  the UI displays, but worth knowing about if you inspect both source
-  files side by side.
-- No `.gitignore` / git repository is initialized yet — this was built
-  starting from an empty, non-git directory.
+- `npm audit` flags a moderate/high `esbuild` advisory (bundled by Vite
+  5) affecting the **local dev server** only (GHSA-67mh-4wv8-2f99); not
+  production builds. Fixing it needs a Vite 7/8 upgrade — out of scope
+  for now.
+- The frontend's `normalCdf` (rational approximation) and the backend's
+  (`math.erf`, exact) can differ by ≤1.5×10⁻⁷ — invisible at the UI's
+  displayed precision.
