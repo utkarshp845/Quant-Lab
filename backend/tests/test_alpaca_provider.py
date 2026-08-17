@@ -8,6 +8,12 @@ Alpaca's published API reference for /v2/stocks/{symbol}/bars,
 
 Covers TSLA and NVDA specifically, per the requested scope, plus the
 credentials-required and HTTP-error paths that apply to any symbol.
+
+v0.1.19: get_historical_data() now also persists a raw-ingestion row
+(see app/storage/raw_ingestion_repository.py) -- isolated_db below
+points DATABASE_PATH at a throwaway tmp_path file for every test here,
+same as tests/test_historical_storage_api.py, so this file never
+writes into a developer's real backend/data/historical_bars.db.
 """
 
 from datetime import date
@@ -17,6 +23,11 @@ import pytest
 
 from app.models.market_data import MarketBar, Quote
 from app.providers.alpaca_provider import AlpacaProvider
+
+
+@pytest.fixture(autouse=True)
+def isolated_db(tmp_path, monkeypatch):
+    monkeypatch.setenv("DATABASE_PATH", str(tmp_path / "test_alpaca_provider.db"))
 
 
 def _bars_response(symbol: str, bars: list[dict]) -> httpx.Response:

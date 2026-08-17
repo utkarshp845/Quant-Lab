@@ -10,6 +10,12 @@ Covers TSLA and NVDA specifically, per the requested scope, plus the
 two details most likely to silently break if this provider is ever
 touched again: bars use millisecond timestamps, quotes/trades use
 nanosecond timestamps, and bid ("p") vs. ask ("P") is case-sensitive.
+
+v0.1.19: get_historical_data() now also persists a raw-ingestion row
+(see app/storage/raw_ingestion_repository.py) -- isolated_db below
+points DATABASE_PATH at a throwaway tmp_path file for every test here,
+same as tests/test_historical_storage_api.py, so this file never
+writes into a developer's real backend/data/historical_bars.db.
 """
 
 from datetime import date, datetime, timezone
@@ -19,6 +25,11 @@ import pytest
 
 from app.models.market_data import MarketBar, Quote
 from app.providers.massive_provider import MassiveProvider
+
+
+@pytest.fixture(autouse=True)
+def isolated_db(tmp_path, monkeypatch):
+    monkeypatch.setenv("DATABASE_PATH", str(tmp_path / "test_massive_provider.db"))
 
 
 def _bars_response(ticker: str, bars: list[dict]) -> httpx.Response:
