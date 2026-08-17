@@ -65,3 +65,81 @@ def get_database_path() -> str:
     any caching to work around.
     """
     return os.environ.get("DATABASE_PATH", DEFAULT_DATABASE_PATH)
+
+
+# --- Auto-ingestion (v0.1.18, app/ingestion/auto_ingest.py) ---
+#
+# Unattended, scheduled pulling of historical bars, as an alternative
+# to a human clicking "Save to Database" after every manual fetch --
+# see that module's docstring for the full design. OFF by default
+# (get_auto_ingest_enabled() below): turning it on means the app
+# process makes real, scheduled, credentialed calls to a real provider
+# for as long as it's running, which is a meaningfully different thing
+# from every other feature in this app (all of which are request-
+# triggered) and should never happen just because the app started.
+
+DEFAULT_AUTO_INGEST_SYMBOLS = "TSLA,NVDA"
+DEFAULT_AUTO_INGEST_TIMEFRAMES = "1d"
+DEFAULT_AUTO_INGEST_INTERVAL_SECONDS = 300
+DEFAULT_AUTO_INGEST_LOOKBACK_DAYS = 5
+
+
+def get_auto_ingest_enabled() -> bool:
+    """Whether app/main.py should start the auto-ingest background loop
+    at all. Reads AUTO_INGEST_ENABLED; unset or anything other than
+    "true"/"1"/"yes"/"on" (case-insensitive) means disabled -- the safe
+    default for a fresh checkout, a test run, or CI, none of which
+    should make outbound network calls just because the app imported."""
+    return os.environ.get("AUTO_INGEST_ENABLED", "false").strip().lower() in ("1", "true", "yes", "on")
+
+
+def get_auto_ingest_symbols() -> list[str]:
+    """Which symbols to poll. Reads AUTO_INGEST_SYMBOLS as a comma-
+    separated list (e.g. "TSLA,NVDA"), defaulting to both symbols this
+    app currently supports (see app/api/historical_data.py's
+    ALLOWED_SYMBOLS) -- not validated against that set here, so a typo
+    surfaces as a real per-pair error in the ingestion log
+    (app/ingestion/auto_ingest.py) rather than a silent, separate check
+    that could drift from ALLOWED_SYMBOLS over time.
+    """
+    raw = os.environ.get("AUTO_INGEST_SYMBOLS", DEFAULT_AUTO_INGEST_SYMBOLS)
+    return [s.strip().upper() for s in raw.split(",") if s.strip()]
+
+
+def get_auto_ingest_timeframes() -> list[str]:
+    """Which timeframes to poll per symbol, e.g. "1d" or "5m,1h,1d".
+    Reads AUTO_INGEST_TIMEFRAMES, defaulting to daily bars only."""
+    raw = os.environ.get("AUTO_INGEST_TIMEFRAMES", DEFAULT_AUTO_INGEST_TIMEFRAMES)
+    return [t.strip() for t in raw.split(",") if t.strip()]
+
+
+def get_auto_ingest_provider() -> str:
+    """Which MarketDataProvider the auto-ingest loop pulls from. Reads
+    AUTO_INGEST_PROVIDER; defaults to get_configured_provider_name()
+    (MARKET_DATA_PROVIDER) rather than a second, independent default --
+    a deployment that already picked a provider for manual fetches
+    almost always wants the unattended loop pulling from the same one,
+    and this only needs setting separately when that's not true."""
+    return os.environ.get("AUTO_INGEST_PROVIDER", get_configured_provider_name()).strip().lower()
+
+
+def get_auto_ingest_interval_seconds() -> int:
+    """How often (in seconds) the auto-ingest loop re-polls every
+    configured symbol/timeframe pair. Reads AUTO_INGEST_INTERVAL_SECONDS,
+    defaulting to 300 (5 minutes) -- frequent enough to catch a new
+    daily bar the same day it closes without hammering a provider's
+    rate limit every polling cycle."""
+    return int(os.environ.get("AUTO_INGEST_INTERVAL_SECONDS", str(DEFAULT_AUTO_INGEST_INTERVAL_SECONDS)))
+
+
+def get_auto_ingest_lookback_days() -> int:
+    """How many trailing days each ingestion cycle re-fetches, not just
+    "since last time" -- see app/ingestion/auto_ingest.py's
+    run_ingestion_cycle() docstring for why re-fetching an overlapping
+    window is deliberate rather than wasted work (the storage layer's
+    UNIQUE-constraint dedup makes re-submitting an already-stored bar a
+    no-op). Reads AUTO_INGEST_LOOKBACK_DAYS, defaulting to 5 -- enough
+    to self-heal a gap left by a few missed cycles or a process that
+    was down over a weekend, without asking for a provider's entire
+    history every few minutes."""
+    return int(os.environ.get("AUTO_INGEST_LOOKBACK_DAYS", str(DEFAULT_AUTO_INGEST_LOOKBACK_DAYS)))

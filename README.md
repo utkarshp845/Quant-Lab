@@ -67,6 +67,13 @@ spreadsheet — but with every step shown, not hidden behind a single
   deliberate "Save to Database" / "Load from Database" action, not
   automatic. See
   [16. Historical bar storage](#16-historical-bar-storage-v0117).
+- **(v0.1.18) Validates every bar before it's stored** — impossible
+  OHLCV values and in-batch duplicates are rejected and quarantined
+  (never silently dropped); out-of-order arrivals, unusual gaps, and
+  extreme price moves are flagged but still stored — and **can pull
+  bars on an unattended schedule** instead of requiring a manual "Save
+  to Database" click, opt-in via `AUTO_INGEST_ENABLED`. See
+  [17. Bar validation, quarantine, and auto-ingestion](#17-bar-validation-quarantine-and-auto-ingestion-v0118).
 
 ## 3. How to install dependencies
 
@@ -451,17 +458,19 @@ transparency of a single, manually-driven calculation coming first.
 
 Historical OHLCV bar retrieval landed in v0.1.16 (equities only, TSLA/NVDA,
 Alpaca/Massive — see [15. Historical market data](#15-historical-market-data-v0116)
-below), and a SQLite-backed storage layer for those bars landed in
+below), a SQLite-backed storage layer for those bars landed in
 v0.1.17 (see [16. Historical bar storage](#16-historical-bar-storage-v0117)
+below), and v0.1.18 added an explicit validation/quarantine step plus an
+opt-in unattended ingestion loop (see
+[17. Bar validation, quarantine, and auto-ingestion](#17-bar-validation-quarantine-and-auto-ingestion-v0118)
 below) — but **backtesting itself** — running a strategy against that
 data and reporting simulated results — has not: this phase stops at
-"fetch, normalize, and persist bars," on purpose, and does not run any
-calculation against them. Historical **options** data (as opposed to
-equity bars) is also still not implemented — same placeholder
-`get_chain()` situation described in section 13. Also still out of
-scope, deliberately: an automated/scheduled ingestion job (bars are
-only ever saved by a human clicking "Save to Database"), and a
-market-wide scanner or trade journal built on top of stored bars.
+"fetch, normalize, validate, and persist bars," on purpose, and does not
+run any calculation against them. Historical **options** data (as
+opposed to equity bars) is also still not implemented — same
+placeholder `get_chain()` situation described in section 13. Also still
+out of scope, deliberately: a market-wide scanner or trade journal built
+on top of stored bars.
 
 **One item is not "not yet" — it is permanently out of scope, at every
 phase, including the paper-trading and signal-generation phases below:**
@@ -1418,18 +1427,24 @@ API routes (app/api/historical_storage.py)           call save_bars()/get_bars()
 ```
 `app/storage/db.py` owns the SQLite connection (a new one per call,
 never a long-lived shared connection -- see its docstring for why) and
-schema creation. `app/storage/historical_bar_repository.py` exposes
-exactly two functions, both HistoricalBar in/out, never a raw
-`sqlite3.Row` or dict past this file's boundary: `save_bars()` (INSERT
-OR IGNORE, so re-saving an already-stored bar is a no-op, not an error
--- see `SaveResult`'s `inserted`/`skipped_duplicates` split) and
-`get_bars()` (a plain SELECT by symbol/timeframe/provider/date-range,
-oldest-first). Neither this repository nor `app/api/historical_storage.py`
-imports anything from `app/providers/` -- checked by
+schema creation. `app/storage/historical_bar_repository.py`'s original
+two functions, `save_bars()` (INSERT OR IGNORE, so re-saving an
+already-stored bar is a no-op, not an error -- see `SaveResult`'s
+`inserted`/`skipped_duplicates` split) and `get_bars()` (a plain SELECT
+by symbol/timeframe/provider/date-range, oldest-first), are both still
+exactly what they were in v0.1.17 -- unchanged, not just source-
+compatible. v0.1.18 added three more (`save_validated_bars()`,
+`save_rejected_bars()`, `get_quarantined_bars()` -- see section 17),
+but every function in this file is still HistoricalBar/ValidatedBar/
+RejectedBar in, never a raw `sqlite3.Row` or dict past this file's
+boundary. This repository never imports `app.providers` OR
+`app.ingestion` -- checked by
 `tests/test_historical_bar_repository.py::TestProviderIndependence`,
 the same "source text check catches an import" idiom
 `tests/test_providers.py::TestEngineHasNoCsvDependency` already uses
-for the calculator's provider-independence.
+for the calculator's provider-independence. (`app/api/historical_storage.py`
+does import `app.ingestion.bar_validation` as of v0.1.18 -- it's the
+repository specifically that stays independent, not every caller of it.)
 
 **One normalized shape end to end.** `HistoricalBar` (`app/models/
 market_data.py`, first introduced in v0.1.16 as GET `.../history`'s
@@ -1482,6 +1497,85 @@ proves the live-fetch route genuinely returns 503, and proves
 at all, so there is nothing in that route capable of contacting Alpaca
 even if it wanted to.
 
+## 17. Bar validation, quarantine, and auto-ingestion (v0.1.18)
+
+Two additions on top of v0.1.17's storage layer, both about making the
+growing historical dataset trustworthy and self-sustaining rather than
+just append-only:
+
+**An explicit Validate step, between Normalize and Store.** Before
+v0.1.18, a bar went straight from a provider's response to a database
+row with only Pydantic's type checking in between (a real float, a real
+datetime -- never "does this make sense"). Now every bar passes through
+`app/ingestion/bar_validation.py::validate_bars()` first, whether it
+arrived via a human's "Save to Database" click
+(`POST /market-data/history/save`) or the auto-ingest loop below. Two
+severities:
+
+- **Hard (rejected, never stored):** a non-positive price, negative
+  volume, `high < low`, `open`/`close` outside `[low, high]`, a
+  timestamp more than 5 minutes in the future, or an exact duplicate
+  (same provider+symbol+timeframe+timestamp) appearing twice in the
+  same submitted batch.
+- **Soft (flagged, still stored):** arriving out of chronological order
+  within its own batch, an unusually large gap since the previous bar
+  in its series (>5x the timeframe's nominal interval), or an extreme
+  price move from the previous bar (>20% close-to-close).
+
+Every rule is a plain, explainable threshold — deliberately not a
+machine-learning anomaly detector; see that file's module docstring for
+the full checklist and the reasoning behind each threshold.
+
+**Rejected bars are quarantined, never silently dropped.** A new
+`quarantined_bars` table (`app/storage/db.py`, migrated into an existing
+v0.1.17 database file automatically via `PRAGMA table_info` — no manual
+migration step) logs every rejected bar with why it failed
+(`validation_errors`, a JSON array) and when
+(`ingested_at`) — an append-only audit log with no `UNIQUE` constraint
+of its own, so a bad bar recurring on a retry is logged again rather
+than silently collapsed. `historical_bars` itself gained two columns,
+`validation_status` (`valid`/`flagged`) and `validation_warnings` (a
+JSON array), so a flagged-but-stored bar's reason is visible on the row
+itself. `POST /market-data/history/save`'s response now reports
+`flagged`/`rejected_invalid`/`rejected` alongside the existing
+`inserted`/`skipped_duplicates`, and a new
+`GET /market-data/{symbol}/history/quarantined` route reads the
+quarantine table back (same symbol/timeframe/provider/date-range
+filter as `GET .../history/stored`).
+
+**Auto-ingestion: pulling bars on a schedule, not just on a click.**
+`app/ingestion/auto_ingest.py` polls every configured symbol/timeframe
+pair on a timer, running each one through the exact same
+fetch → validate → store path a manual save uses
+(`app/api/historical_data.py`'s `fetch_normalized_bars()` →
+`validate_bars()` → `save_validated_bars()`/`save_rejected_bars()`).
+Each cycle re-fetches a trailing window (`AUTO_INGEST_LOOKBACK_DAYS`,
+default 5 days) rather than tracking "where it left off" — safe because
+`save_validated_bars()`'s `INSERT OR IGNORE` makes re-submitting an
+already-stored bar a no-op, and it doubles as automatic gap-healing
+after a missed cycle or downtime. One pair failing (a rate limit, a
+network blip, a bad symbol) is caught, logged, and reported per-pair —
+it never aborts the rest of the cycle or crashes the loop.
+
+**Off by default.** Set `AUTO_INGEST_ENABLED=true` (plus real provider
+credentials — see `.env.example`) to turn it on; unset or any other
+value means the app never makes an unattended outbound call, which is
+also why a fresh checkout, a test run, and CI are all unaffected by
+this feature existing. `app/main.py` starts/stops the loop via a
+FastAPI `lifespan` context manager, tied to the app process's own
+start/stop — `AUTO_INGEST_SYMBOLS`, `AUTO_INGEST_TIMEFRAMES`,
+`AUTO_INGEST_PROVIDER`, and `AUTO_INGEST_INTERVAL_SECONDS` configure
+what it polls, from where, and how often.
+
+**Tests:** `tests/test_auto_ingest.py` covers the ingestion cycle
+(fetch/validate/save, dedup across repeated cycles, quarantine on
+rejection, per-pair failure isolation, and the loop's immediate-first-
+cycle + clean-shutdown behavior) with a stubbed provider — no real
+network call. `tests/test_historical_storage_api.py` and
+`tests/test_historical_bar_repository.py` cover the validation/
+quarantine wiring on the manual-save path; `save_bars()` itself is
+unchanged and still exercised exactly as it was in v0.1.17.
+
 ---
 
 ## Project structure
@@ -1489,10 +1583,15 @@ even if it wanted to.
 ```
 backend/
   app/
-    main.py                        FastAPI app, CORS, router mount. v0.1.17 mounted historical_storage_router
+    main.py                        FastAPI app, CORS, router mount. v0.1.17 mounted historical_storage_router.
+                                    v0.1.18 added a `lifespan` context manager that starts/stops
+                                    app/ingestion/auto_ingest.py's background loop with the app process,
+                                    gated behind config.get_auto_ingest_enabled() (off by default)
     config.py                      v0.1.2: the app's one os.environ touchpoint (provider selection + credentials).
                                     v0.1.17 added get_database_path() (DATABASE_PATH, defaults to
-                                    backend/data/historical_bars.db) for app/storage/
+                                    backend/data/historical_bars.db) for app/storage/.
+                                    v0.1.18 added the AUTO_INGEST_* getters (enabled/symbols/timeframes/
+                                    provider/interval/lookback) for app/ingestion/auto_ingest.py
     models/
       bear_put_spread.py           Input models + validation
       response.py                  Response models (formulas embedded)
@@ -1511,7 +1610,17 @@ backend/
                                     that route's docstring for why there is deliberately no pass/fail
                                     verdict field anywhere in this shape (numbers only, reader decides)
       historical_storage.py        v0.1.17: SaveBarsRequest/SaveBarsResponse for POST .../history/save --
-                                    the stored-read route reuses HistoricalBarsResponse as-is, on purpose
+                                    the stored-read route reuses HistoricalBarsResponse as-is, on purpose.
+                                    v0.1.18: SaveBarsResponse gained flagged/rejected_invalid/rejected
+                                    (+ RejectedBarInfo) and QuarantinedBarsResponse was added for
+                                    GET .../history/quarantined
+      validation.py                v0.1.18: ValidationStatus/ValidatedBar/RejectedBar/QuarantinedBarRecord --
+                                    shared shapes between app/ingestion/bar_validation.py (the producer) and
+                                    app/storage/ (the persister). Lives here, not in either of those
+                                    packages, because app/storage/historical_bar_repository.py is
+                                    contractually forbidden from importing app.ingestion (see
+                                    test_historical_bar_repository.py::TestProviderIndependence) -- this is
+                                    the neutral home both sides can import from
     calculations/
       stats.py                     normal_cdf
       bear_put_spread.py           All core formulas, one function each
@@ -1525,6 +1634,17 @@ backend/
       ohlcv_csv.py                 v0.1.16: OHLCV bar CSV parser (its own column-alias list, separate
                                     from csv_normalizer.py's options-chain-specific one) -- backs the
                                     CSV-vs-provider historical-data comparison route
+      bar_validation.py            v0.1.18: validate_bars() -- the explicit Validate step between Normalize
+                                    and Store (see README section 17). Hard rules (impossible OHLCV values,
+                                    in-batch duplicates) reject a bar to quarantine; soft rules (out-of-
+                                    order arrival, gaps, extreme moves) flag it but still store it. Called
+                                    by both POST .../history/save and auto_ingest.py -- never imports
+                                    app.storage, keeping the dependency one-directional
+      auto_ingest.py                v0.1.18: run_ingestion_cycle()/run_ingestion_loop() -- the unattended,
+                                    scheduled alternative to a human clicking "Save to Database". Reuses
+                                    app/api/historical_data.py's fetch_normalized_bars() rather than a
+                                    second way to call a provider. Off unless AUTO_INGEST_ENABLED=true;
+                                    started/stopped by app/main.py's lifespan
     providers/                     v0.1.2: MarketDataProvider interface (Phase 4, data-source half)
       base.py                      MarketDataProvider ABC + NormalizedChainResult; optional capability
                                     methods (get_historical_data/get_latest_quote/stream_quotes)
@@ -1546,11 +1666,15 @@ backend/
                                     the only package that writes SQL for market data
       db.py                        SQLite connection (new one per call, no long-lived shared connection)
                                     + schema creation (historical_bars table, UNIQUE provider+symbol+
-                                    timeframe+timestamp)
+                                    timeframe+timestamp). v0.1.18 added validation_status/
+                                    validation_warnings columns (migrated into an existing v0.1.17 file via
+                                    PRAGMA table_info) and the quarantined_bars table (see section 17)
       historical_bar_repository.py save_bars() / get_bars() -- HistoricalBar in, HistoricalBar out, never
                                     a raw sqlite3.Row past this file's own boundary. Never imports
-                                    app.providers -- checked by
-                                    test_historical_bar_repository.py::TestProviderIndependence
+                                    app.providers or app.ingestion -- checked by
+                                    test_historical_bar_repository.py::TestProviderIndependence.
+                                    v0.1.18 added save_validated_bars()/save_rejected_bars()/
+                                    get_quarantined_bars() -- save_bars() itself is unchanged
     streaming/                     v0.1.12: backend-only real-time streaming (see README section 14)
       base.py                      v0.1.13: ReconnectingQuoteStream -- the reconnect/backoff loop and the
                                     three provider-agnostic exceptions (StreamCredentialsMissing/
@@ -1604,7 +1728,11 @@ backend/
                                     second provider call) + GET /market-data/{symbol}/history/stored
                                     (repository.get_bars() -> the identical HistoricalBarsResponse shape
                                     GET .../history returns -- provider stays a required query param since
-                                    the storage layer's identity key includes it)
+                                    the storage layer's identity key includes it).
+                                    v0.1.18: POST .../history/save now runs bars through
+                                    bar_validation.validate_bars() before save_validated_bars() +
+                                    save_rejected_bars(); added GET .../history/quarantined
+                                    (repository.get_quarantined_bars())
   scripts/
     alpaca_manual_check.py         v0.1.4: opt-in, NOT run by pytest -- hits the real Alpaca API with
                                     your own credentials to sanity-check TSLA/NVDA bars + quotes
@@ -1676,11 +1804,22 @@ backend/
                                     file per test -- insertion, retrieval, duplicate protection, multiple
                                     symbols/timeframes/providers not bleeding into each other, inclusive
                                     date-range retrieval, oldest-first ordering, and TestProviderIndependence
-                                    (source-text check: this module never imports app.providers)
+                                    (source-text check: this module never imports app.providers or
+                                    app.ingestion)
     test_historical_storage_api.py v0.1.17: route tests for POST .../history/save and GET .../history/stored
                                     (each with an isolated DATABASE_PATH per test), plus TestExactWorkflow --
                                     the literal fetch -> save -> confirm -> load -> verify-match -> disable-
-                                    provider -> load-again scenario this phase's spec asked to be proven
+                                    provider -> load-again scenario this phase's spec asked to be proven.
+                                    v0.1.18: added rejection/quarantine coverage -- an impossible-OHLCV bar
+                                    is rejected not stored, shows up in the save response's `rejected` list
+                                    and in GET .../history/quarantined, and a valid bar alongside a rejected
+                                    one in the same batch still saves the valid one
+    test_auto_ingest.py            v0.1.18: run_ingestion_cycle()/run_ingestion_loop() against a stubbed
+                                    provider (no real network call) -- fetch/validate/save, re-running a
+                                    cycle is a no-op for already-stored bars, an impossible-OHLCV bar is
+                                    quarantined not stored, one pair's provider failure is caught and
+                                    reported without stopping the rest of the cycle, and the loop runs its
+                                    first cycle immediately and stops cleanly when asked
     fixtures/sample_thinkorswim_chain.csv  v0.1.1: example chain export -- an OPTIONS-CHAIN snapshot
                                     (underlying "MCL"), not an OHLCV bar time series; cannot be used as-is
                                     with the v0.1.16 historical-data comparison route -- see README section 15

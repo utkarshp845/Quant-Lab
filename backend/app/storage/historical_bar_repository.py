@@ -19,11 +19,13 @@ type for save_bars) -- never a raw sqlite3.Row past this file's own
 boundary, and never a dict standing in for one.
 """
 
+import json
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 from app.models.market_data import HistoricalBar
+from app.models.validation import QuarantinedBarRecord, RejectedBar, ValidatedBar
 from app.storage.db import get_connection
 
 
@@ -62,11 +64,73 @@ def save_bars(bars: list[HistoricalBar], *, db_path: str | Path | None = None) -
         inserted = 0
         with conn:
             for bar in bars:
-                cursor = conn.execute(
+                # status="valid", warnings=[] -- this function is the
+                # pre-v0.1.18 entry point, for callers (direct repository
+                # tests, any future caller with no validation step of its
+                # own) that hand it bars with no ValidationStatus opinion
+                # attached at all. save_validated_bars() below is what
+                # app/api/historical_storage.py and
+                # app/ingestion/auto_ingest.py actually call, once every
+                # bar has been through app/ingestion/bar_validation.py.
+                inserted += _insert_bar(conn, bar, status="valid", warnings=[], now=now)
+    finally:
+        conn.close()
+
+    return SaveResult(total=len(bars), inserted=inserted, skipped_duplicates=len(bars) - inserted)
+
+
+def save_validated_bars(validated_bars: list[ValidatedBar], *, db_path: str | Path | None = None) -> SaveResult:
+    """Same INSERT OR IGNORE behavior as save_bars() above (re-saving an
+    already-stored bar is a no-op, not an error), but for bars that have
+    already been through app/ingestion/bar_validation.py -- each row's
+    `validation_status`/`validation_warnings` columns record what that
+    step found (VALID and empty, or FLAGGED with the reasons why), so a
+    later reader of the table can tell "this bar looked fine" apart
+    from "this bar was stored anyway, but flag it for review" without
+    re-deriving that from the raw OHLCV values.
+
+    Only ValidatedBar in -- a RejectedBar has no business reaching this
+    table at all; see save_rejected_bars() for where those go instead.
+    """
+    if not validated_bars:
+        return SaveResult(total=0, inserted=0, skipped_duplicates=0)
+
+    now = datetime.now(timezone.utc).isoformat()
+    conn = get_connection(db_path)
+    try:
+        inserted = 0
+        with conn:
+            for validated in validated_bars:
+                inserted += _insert_bar(conn, validated.bar, status=validated.status.value, warnings=validated.warnings, now=now)
+    finally:
+        conn.close()
+
+    return SaveResult(total=len(validated_bars), inserted=inserted, skipped_duplicates=len(validated_bars) - inserted)
+
+
+def save_rejected_bars(rejected_bars: list[RejectedBar], *, db_path: str | Path | None = None) -> int:
+    """Logs every bar app/ingestion/bar_validation.py hard-rejected to
+    `quarantined_bars` -- an append-only audit trail (see db.py's
+    schema comment for why there's deliberately no UNIQUE constraint
+    here, unlike historical_bars) of what was rejected, when, and why.
+    Returns how many rows were written -- always len(rejected_bars);
+    there is no dedup here to make "how many were skipped" a
+    meaningful question the way it is for save_bars().
+    """
+    if not rejected_bars:
+        return 0
+
+    now = datetime.now(timezone.utc).isoformat()
+    conn = get_connection(db_path)
+    try:
+        with conn:
+            for rejected in rejected_bars:
+                bar = rejected.bar
+                conn.execute(
                     """
-                    INSERT OR IGNORE INTO historical_bars
-                        (provider, symbol, timeframe, timestamp, open, high, low, close, volume, created_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    INSERT INTO quarantined_bars
+                        (provider, symbol, timeframe, timestamp, open, high, low, close, volume, ingested_at, validation_errors)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         bar.provider,
@@ -79,16 +143,44 @@ def save_bars(bars: list[HistoricalBar], *, db_path: str | Path | None = None) -
                         bar.close,
                         bar.volume,
                         now,
+                        json.dumps(rejected.reasons),
                     ),
                 )
-                # INSERT OR IGNORE: rowcount is 1 for a real insert, 0 when
-                # the UNIQUE constraint silently ignored a duplicate --
-                # see TestSaveBars::test_duplicate_bars_are_not_inserted_twice.
-                inserted += cursor.rowcount
     finally:
         conn.close()
 
-    return SaveResult(total=len(bars), inserted=inserted, skipped_duplicates=len(bars) - inserted)
+    return len(rejected_bars)
+
+
+def _insert_bar(conn, bar: HistoricalBar, *, status: str, warnings: list[str], now: str) -> int:
+    """Shared INSERT OR IGNORE, used by both save_bars() and
+    save_validated_bars() -- one place writing this SQL, whether or not
+    the caller has a ValidationStatus opinion about the bar. Returns 1
+    for a real insert, 0 when the UNIQUE constraint silently ignored a
+    duplicate (see TestSaveBars::test_duplicate_bars_are_not_inserted_twice)."""
+    cursor = conn.execute(
+        """
+        INSERT OR IGNORE INTO historical_bars
+            (provider, symbol, timeframe, timestamp, open, high, low, close, volume, created_at,
+             validation_status, validation_warnings)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            bar.provider,
+            bar.symbol,
+            bar.timeframe,
+            _to_storage_timestamp(bar.timestamp),
+            bar.open,
+            bar.high,
+            bar.low,
+            bar.close,
+            bar.volume,
+            now,
+            status,
+            json.dumps(warnings),
+        ),
+    )
+    return cursor.rowcount
 
 
 def get_bars(
@@ -143,6 +235,62 @@ def get_bars(
             low=row["low"],
             close=row["close"],
             volume=row["volume"],
+        )
+        for row in rows
+    ]
+
+
+def get_quarantined_bars(
+    *,
+    symbol: str,
+    timeframe: str,
+    provider: str,
+    start: date,
+    end: date,
+    db_path: str | Path | None = None,
+) -> list[QuarantinedBarRecord]:
+    """The read side of save_rejected_bars() -- the audit trail check
+    #12 asked for: every bar that was rejected for this symbol/
+    timeframe/provider/date-range, and why, oldest-first. Same filter
+    shape as get_bars() (date range is inclusive of `start`/`end`),
+    deliberately: this is the same "read what was persisted" pattern
+    applied to the quarantine table instead of historical_bars.
+    """
+    symbol = symbol.upper()
+    start_dt = datetime(start.year, start.month, start.day, tzinfo=timezone.utc)
+    end_dt_exclusive = datetime(end.year, end.month, end.day, tzinfo=timezone.utc) + timedelta(days=1)
+
+    conn = get_connection(db_path)
+    try:
+        rows = conn.execute(
+            """
+            SELECT symbol, timeframe, provider, timestamp, open, high, low, close, volume,
+                   ingested_at, validation_errors
+            FROM quarantined_bars
+            WHERE symbol = ? AND timeframe = ? AND provider = ?
+              AND timestamp >= ? AND timestamp < ?
+            ORDER BY timestamp ASC
+            """,
+            (symbol, timeframe, provider, start_dt.isoformat(), end_dt_exclusive.isoformat()),
+        ).fetchall()
+    finally:
+        conn.close()
+
+    return [
+        QuarantinedBarRecord(
+            bar=HistoricalBar(
+                symbol=row["symbol"],
+                timeframe=row["timeframe"],
+                provider=row["provider"],
+                timestamp=datetime.fromisoformat(row["timestamp"]),
+                open=row["open"],
+                high=row["high"],
+                low=row["low"],
+                close=row["close"],
+                volume=row["volume"],
+            ),
+            ingested_at=datetime.fromisoformat(row["ingested_at"]),
+            validation_errors=json.loads(row["validation_errors"]),
         )
         for row in rows
     ]
