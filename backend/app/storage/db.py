@@ -1,7 +1,8 @@
 """SQLite connection + schema for persisted historical bars (v0.1.17;
 validation metadata + quarantine table added v0.1.18; raw-ingestion
 table added v0.1.19; Research v1's experiments/experiment_events tables
-added v0.1.20).
+added v0.1.20; Feature Engine v1's historical_features table added
+v0.1.21).
 
 Why SQLite, specifically: this is a local, single-user, no-auth
 educational tool (see README section 1) -- a server-based RDBMS
@@ -185,6 +186,85 @@ CREATE TABLE IF NOT EXISTS experiment_events (
 );
 CREATE INDEX IF NOT EXISTS idx_experiment_events_experiment
     ON experiment_events (experiment_id, signal_timestamp);
+
+-- Feature Engine v1 (app/features/, app/api/features.py, app/storage/
+-- feature_repository.py): one row per (symbol, timeframe, provider,
+-- timestamp) -- the SAME identity key as historical_bars above, since
+-- a FeatureRecord is a 1:1 transform of one normalized bar, not an
+-- independent event. Named REAL columns, one per leaf feature in the
+-- fixed v1 contract (app/models/features.py), rather than a JSON blob
+-- -- unlike experiments'/outcomes' per-experiment-defined shape
+-- (necessarily JSON, see the comment above), this contract is fixed
+-- and identical for every row, so explicit typed columns match
+-- historical_bars' own OHLCV-as-columns convention and let a future
+-- consumer filter/query on individual feature values directly in SQL.
+-- Every feature column is nullable: "if insufficient historical data
+-- exists, return null rather than zero" (this feature's rule 3)
+-- applies uniformly, including to `market_context_applicable`'s own
+-- sub-columns when that symbol IS configured for market context but a
+-- specific value could not be computed. `market_context_applicable`
+-- itself is NOT nullable -- it distinguishes "this symbol is not
+-- configured for market context at all" (0, every spy_/qqq_/
+-- relative_strength_ column NULL for a structural reason) from
+-- "configured, but this particular value could not be computed" (1,
+-- with some of those same columns NULL for a data reason) -- two
+-- different meanings a bare NULL alone could not tell apart.
+-- Recomputing features for a symbol/timeframe/provider/timestamp
+-- REPLACES the existing row (see feature_repository.save_features()) --
+-- unlike historical_bars' INSERT OR IGNORE, which deliberately
+-- preserves the first-ever ingested value: a feature row is entirely
+-- DERIVED from historical_bars, so a recompute (a bug fix, a formula
+-- change) should overwrite stale derived data, the same reasoning
+-- experiment_events' replace-not-append design above already applies.
+CREATE TABLE IF NOT EXISTS historical_features (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    symbol TEXT NOT NULL,
+    timeframe TEXT NOT NULL,
+    provider TEXT NOT NULL,
+    timestamp TEXT NOT NULL,
+    calculated_at TEXT NOT NULL,
+    feature_contract_version TEXT NOT NULL,
+    market_context_applicable INTEGER NOT NULL,
+    -- PRICE
+    return_5m REAL,
+    return_15m REAL,
+    return_30m REAL,
+    return_60m REAL,
+    -- VOLUME
+    volume INTEGER NOT NULL,
+    relative_volume REAL,
+    volume_acceleration REAL,
+    -- VOLATILITY
+    realized_volatility REAL,
+    atr REAL,
+    volatility_ratio REAL,
+    volatility_percentile REAL,
+    -- MARKET CONTEXT
+    spy_return_5m REAL,
+    spy_return_15m REAL,
+    spy_return_30m REAL,
+    spy_return_60m REAL,
+    qqq_return_5m REAL,
+    qqq_return_15m REAL,
+    qqq_return_30m REAL,
+    qqq_return_60m REAL,
+    relative_strength_spy_5m REAL,
+    relative_strength_spy_15m REAL,
+    relative_strength_spy_30m REAL,
+    relative_strength_spy_60m REAL,
+    relative_strength_qqq_5m REAL,
+    relative_strength_qqq_15m REAL,
+    relative_strength_qqq_30m REAL,
+    relative_strength_qqq_60m REAL,
+    -- PRICE POSITION
+    vwap_distance REAL,
+    ma20_distance REAL,
+    ma50_distance REAL,
+    intraday_range_position REAL,
+    UNIQUE (symbol, timeframe, provider, timestamp)
+);
+CREATE INDEX IF NOT EXISTS idx_historical_features_lookup
+    ON historical_features (symbol, timeframe, provider, timestamp);
 """
 
 # v0.1.18: columns added to an already-shipped table, so CREATE TABLE IF
