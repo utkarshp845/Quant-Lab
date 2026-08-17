@@ -1,6 +1,7 @@
 """SQLite connection + schema for persisted historical bars (v0.1.17;
 validation metadata + quarantine table added v0.1.18; raw-ingestion
-table added v0.1.19).
+table added v0.1.19; Research v1's experiments/experiment_events tables
+added v0.1.20).
 
 Why SQLite, specifically: this is a local, single-user, no-auth
 educational tool (see README section 1) -- a server-based RDBMS
@@ -121,6 +122,69 @@ CREATE TABLE IF NOT EXISTS raw_ingestions (
 );
 CREATE INDEX IF NOT EXISTS idx_raw_ingestions_lookup
     ON raw_ingestions (source, symbol, ingested_at);
+
+-- Research v1 (app/research/, app/api/research.py, app/storage/
+-- research_repository.py): one row per EXPERIMENT -- see
+-- experiment_events below for the individual per-signal observations.
+-- condition_json/outcome_json hold Condition/Outcome (app/models/
+-- research.py) as opaque JSON, the same "structured data as JSON text
+-- alongside named columns for whatever IS queried directly" pattern
+-- raw_ingestions' own `metadata` column already uses above -- there is
+-- exactly one Condition and one Outcome per experiment in v1, so a
+-- second normalized table for either would be pure overhead with no
+-- query this app actually needs. Every column here except
+-- status/completed_at/results_json/error_message is set once, at
+-- creation, and never updated again -- see Experiment's own docstring
+-- for why that is the entire reproducibility guarantee: re-running an
+-- experiment can never change what it was asked to measure.
+CREATE TABLE IF NOT EXISTS experiments (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    hypothesis TEXT NOT NULL,
+    symbol TEXT NOT NULL,
+    start_date TEXT NOT NULL,
+    end_date TEXT NOT NULL,
+    timeframe TEXT NOT NULL,
+    provider TEXT NOT NULL,
+    condition_json TEXT NOT NULL,
+    outcome_json TEXT NOT NULL,
+    status TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    completed_at TEXT,
+    results_json TEXT,
+    error_message TEXT
+);
+
+-- One row per QUALIFYING SIGNAL a run of an experiment found -- see
+-- app/models/research.py::ExperimentEvent's docstring for why
+-- aggregate statistics alone are never enough (spec section 5: "do not
+-- only store aggregate statistics"). Re-running an experiment (POST
+-- /research/experiments/{id}/run) DELETEs and replaces this
+-- experiment's rows rather than appending a second copy -- see
+-- research_repository.replace_events() -- so this always holds "the
+-- events from the most recently completed run", not an ever-growing
+-- log. That is a deliberate departure from quarantined_bars'/
+-- raw_ingestions' append-only design above: those log real-world
+-- events (a rejection, an ingestion attempt) that each genuinely
+-- happened again on a retry; an experiment run is a reproducible
+-- computation over a fixed dataset that should look identical every
+-- time it executes, so keeping only the latest run's events is what
+-- makes "re-run and get the same result" a meaningful, checkable
+-- property instead of an ever-growing pile of duplicates.
+CREATE TABLE IF NOT EXISTS experiment_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    experiment_id TEXT NOT NULL,
+    symbol TEXT NOT NULL,
+    signal_timestamp TEXT NOT NULL,
+    signal_price REAL NOT NULL,
+    condition_value REAL NOT NULL,
+    outcome_timestamp TEXT NOT NULL,
+    outcome_price REAL NOT NULL,
+    outcome_value REAL NOT NULL,
+    success INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_experiment_events_experiment
+    ON experiment_events (experiment_id, signal_timestamp);
 """
 
 # v0.1.18: columns added to an already-shipped table, so CREATE TABLE IF

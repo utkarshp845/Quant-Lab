@@ -7,7 +7,10 @@ app/api/market_data_stream.py), (v0.1.17) persisted storage for
 fetched historical bars (a local SQLite file, app/storage/), and
 (v0.1.18) an unattended auto-ingestion loop that keeps that storage
 growing without a human clicking "Save to Database" every time (see
-app/ingestion/auto_ingest.py) -- layered on top -- no brokerage
+app/ingestion/auto_ingest.py), and (Research v1, v0.1.20) a hypothesis-
+testing engine that searches the normalized historical dataset for
+every occurrence of a condition and measures its outcome (see
+app/research/, app/api/research.py) -- layered on top -- no brokerage
 connectivity, no trade execution, no auth. See the README for the full
 list of assumptions and what is intentionally not implemented yet.
 """
@@ -27,6 +30,7 @@ from app.api.historical_data import router as historical_data_router
 from app.api.historical_storage import router as historical_storage_router
 from app.api.market_data import router as market_data_router
 from app.api.market_data_stream import router as market_data_stream_router
+from app.api.research import router as research_router
 from app.ingestion.auto_ingest import run_ingestion_loop
 
 logger = logging.getLogger("app.main")
@@ -90,6 +94,7 @@ app.include_router(market_data_stream_router, prefix="/api")
 app.include_router(historical_data_router, prefix="/api")
 app.include_router(historical_comparison_router, prefix="/api")
 app.include_router(historical_storage_router, prefix="/api")
+app.include_router(research_router, prefix="/api")
 
 
 @app.get("/api/health")

@@ -281,8 +281,19 @@ class TestRawStorage:
         conn.close()
 
         # sqlite_sequence is SQLite's own AUTOINCREMENT bookkeeping
-        # table, not application data.
-        assert tables - {"sqlite_sequence"} == {"historical_bars", "quarantined_bars", "raw_ingestions"}
+        # table, not application data. experiments/experiment_events
+        # (Research v1, app/storage/db.py) are the same schema file's
+        # tables as everything else here -- get_connection() creates
+        # the whole schema in one executescript() call, so any table it
+        # knows about shows up the moment a connection is opened, not
+        # just the ones this particular pipeline test exercises.
+        assert tables - {"sqlite_sequence"} == {
+            "historical_bars",
+            "quarantined_bars",
+            "raw_ingestions",
+            "experiments",
+            "experiment_events",
+        }
 
     def test_raw_ingestion_row_exists_for_tsla_after_fetch(self, pipeline_result):
         rows = get_raw_ingestions(source="alpaca", symbol="TSLA")
