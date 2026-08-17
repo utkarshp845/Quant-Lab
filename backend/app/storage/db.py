@@ -1,4 +1,5 @@
-"""SQLite connection + schema for persisted historical bars (v0.1.17).
+"""SQLite connection + schema for persisted historical bars (v0.1.17;
+validation metadata + quarantine table added v0.1.18).
 
 Why SQLite, specifically: this is a local, single-user, no-auth
 educational tool (see README section 1) -- a server-based RDBMS
@@ -53,14 +54,66 @@ CREATE TABLE IF NOT EXISTS historical_bars (
 );
 CREATE INDEX IF NOT EXISTS idx_historical_bars_lookup
     ON historical_bars (symbol, timeframe, provider, timestamp);
+
+-- v0.1.18: bars that app/ingestion/bar_validation.py rejected outright
+-- (impossible OHLCV values, an in-batch duplicate, ...) -- see that
+-- module's docstring for the full rule list. Deliberately no UNIQUE
+-- constraint: this is an append-only audit log of every rejection a
+-- save/ingestion attempt produced, not a deduplicated table -- the
+-- same bad bar arriving on a retry is worth logging again, not
+-- silently collapsing into one row.
+CREATE TABLE IF NOT EXISTS quarantined_bars (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    provider TEXT NOT NULL,
+    symbol TEXT NOT NULL,
+    timeframe TEXT NOT NULL,
+    timestamp TEXT NOT NULL,
+    open REAL NOT NULL,
+    high REAL NOT NULL,
+    low REAL NOT NULL,
+    close REAL NOT NULL,
+    volume INTEGER NOT NULL,
+    ingested_at TEXT NOT NULL,
+    validation_errors TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_quarantined_bars_lookup
+    ON quarantined_bars (symbol, timeframe, provider, timestamp);
 """
+
+# v0.1.18: columns added to an already-shipped table, so CREATE TABLE IF
+# NOT EXISTS above (a no-op against an existing v0.1.17 database file)
+# isn't enough on its own -- an existing local historical_bars.db from
+# before this version needs these columns added in place. Each entry is
+# (column name, full "ADD COLUMN ..." clause); _migrate() below only
+# runs the ones PRAGMA table_info says are actually missing, so this
+# stays a no-op on a database that already has them (including a brand
+# new one, where _SCHEMA's CREATE TABLE already included these columns
+# from the start -- see historical_bars' definition above... actually
+# it doesn't, on purpose: keeping column additions here, in one place,
+# rather than duplicated in both _SCHEMA's CREATE TABLE and here, is
+# simpler than making sure two copies of "the current schema" never
+# drift apart).
+_HISTORICAL_BARS_MIGRATIONS: list[tuple[str, str]] = [
+    ("validation_status", "ALTER TABLE historical_bars ADD COLUMN validation_status TEXT NOT NULL DEFAULT 'valid'"),
+    ("validation_warnings", "ALTER TABLE historical_bars ADD COLUMN validation_warnings TEXT NOT NULL DEFAULT '[]'"),
+]
+
+
+def _migrate(conn: sqlite3.Connection) -> None:
+    existing_columns = {row["name"] for row in conn.execute("PRAGMA table_info(historical_bars)")}
+    for column_name, alter_statement in _HISTORICAL_BARS_MIGRATIONS:
+        if column_name not in existing_columns:
+            conn.execute(alter_statement)
+    conn.commit()
 
 
 def get_connection(db_path: str | Path | None = None) -> sqlite3.Connection:
     """Opens a new connection to the historical-bars database, creating
     the file/parent directory and the schema (idempotent -- CREATE TABLE
     IF NOT EXISTS / CREATE INDEX IF NOT EXISTS) if this is the first
-    call ever made against this path.
+    call ever made against this path, and migrating an existing v0.1.17
+    file forward (see _migrate() above) if it's missing v0.1.18's new
+    columns.
 
     `db_path` is explicit-override-only (used by tests to point at a
     throwaway file -- see tests/test_historical_bar_repository.py);
@@ -71,4 +124,5 @@ def get_connection(db_path: str | Path | None = None) -> sqlite3.Connection:
     conn = sqlite3.connect(path)
     conn.row_factory = sqlite3.Row
     conn.executescript(_SCHEMA)
+    _migrate(conn)
     return conn

@@ -94,10 +94,25 @@ export interface HistoricalBarsResponse {
 // the UI can render "fetched from provider" and "loaded from database"
 // results with the same code.
 
+// v0.1.18: bars now pass through the backend's validate_bars() before
+// they reach the database -- flagged/rejected_invalid/rejected report
+// what that step found (see backend README section 17). A bar that's
+// flagged is still counted in `inserted`/`skipped_duplicates`; a
+// rejected one never reaches the database at all and only shows up in
+// `rejected_invalid`/`rejected`.
+export interface RejectedBarInfo {
+  symbol: string;
+  timestamp: string;
+  reasons: string[];
+}
+
 export interface SaveBarsResponse {
   total: number;
   inserted: number;
   skipped_duplicates: number;
+  flagged: number;
+  rejected_invalid: number;
+  rejected: RejectedBarInfo[];
 }
 
 // Mirrors backend/app/models/historical_comparison.py exactly --

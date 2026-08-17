@@ -142,8 +142,15 @@ export function HistoricalDataPanel() {
     setStorageError(null);
     try {
       const saved = await saveHistoricalBars(storageResult.bars);
+      const flaggedNote = saved.flagged > 0 ? `, ${saved.flagged} flagged for review` : "";
+      const rejectedNote =
+        saved.rejected_invalid > 0
+          ? ` ${saved.rejected_invalid} bar(s) failed validation and were quarantined, not saved: ${saved.rejected
+              .map((r) => `${r.symbol} @ ${r.timestamp} (${r.reasons.join("; ")})`)
+              .join(" | ")}`
+          : "";
       setStorageStatus(
-        `Saved: ${saved.total} bar(s) total -- ${saved.inserted} new, ${saved.skipped_duplicates} already in the database.`,
+        `Saved: ${saved.total} bar(s) total -- ${saved.inserted} new, ${saved.skipped_duplicates} already in the database${flaggedNote}.${rejectedNote}`,
       );
     } catch (err) {
       setStorageError(err instanceof ApiError ? err.message : "Could not reach the backend to save these bars.");

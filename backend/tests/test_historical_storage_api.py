@@ -49,13 +49,27 @@ class TestSaveHistoricalBarsRoute:
         resp = client.post("/api/market-data/history/save", json={"bars": [_bar_payload()]})
 
         assert resp.status_code == 200
-        assert resp.json() == {"total": 1, "inserted": 1, "skipped_duplicates": 0}
+        assert resp.json() == {
+            "total": 1,
+            "inserted": 1,
+            "skipped_duplicates": 0,
+            "flagged": 0,
+            "rejected_invalid": 0,
+            "rejected": [],
+        }
 
     def test_empty_bars_list_is_a_200_no_op(self):
         resp = client.post("/api/market-data/history/save", json={"bars": []})
 
         assert resp.status_code == 200
-        assert resp.json() == {"total": 0, "inserted": 0, "skipped_duplicates": 0}
+        assert resp.json() == {
+            "total": 0,
+            "inserted": 0,
+            "skipped_duplicates": 0,
+            "flagged": 0,
+            "rejected_invalid": 0,
+            "rejected": [],
+        }
 
     def test_saving_the_same_bars_twice_reports_duplicates_not_an_error(self):
         payload = {"bars": [_bar_payload()]}
@@ -64,7 +78,14 @@ class TestSaveHistoricalBarsRoute:
         resp = client.post("/api/market-data/history/save", json=payload)
 
         assert resp.status_code == 200
-        assert resp.json() == {"total": 1, "inserted": 0, "skipped_duplicates": 1}
+        assert resp.json() == {
+            "total": 1,
+            "inserted": 0,
+            "skipped_duplicates": 1,
+            "flagged": 0,
+            "rejected_invalid": 0,
+            "rejected": [],
+        }
 
     def test_malformed_bar_returns_422(self):
         bad_bar = _bar_payload()
@@ -73,6 +94,65 @@ class TestSaveHistoricalBarsRoute:
         resp = client.post("/api/market-data/history/save", json={"bars": [bad_bar]})
 
         assert resp.status_code == 422
+
+    def test_rejects_bars_with_impossible_ohlcv_values_instead_of_storing_them(self):
+        """A bar with high < low fails app/ingestion/bar_validation.py's
+        hard OHLC-relationship check -- it must never reach
+        historical_bars, and the response must say why."""
+        bad_bar = _bar_payload()
+        bad_bar["high"] = 100.0
+        bad_bar["low"] = 200.0
+
+        resp = client.post("/api/market-data/history/save", json={"bars": [bad_bar]})
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["total"] == 1
+        assert body["inserted"] == 0
+        assert body["rejected_invalid"] == 1
+        assert len(body["rejected"]) == 1
+        assert "high (100.0) is less than low (200.0)" in body["rejected"][0]["reasons"]
+
+        # Never landed in the readable/stored table.
+        stored = client.get(
+            "/api/market-data/TSLA/history/stored",
+            params={"start": "2026-08-01", "end": "2026-08-16", "timeframe": "1d", "provider": "alpaca"},
+        )
+        assert stored.json()["bar_count"] == 0
+
+        # But it IS in the quarantine audit trail.
+        quarantined = client.get(
+            "/api/market-data/TSLA/history/quarantined",
+            params={"start": "2026-08-01", "end": "2026-08-16", "timeframe": "1d", "provider": "alpaca"},
+        )
+        assert quarantined.status_code == 200
+        assert quarantined.json()["quarantined_count"] == 1
+        assert "high (100.0) is less than low (200.0)" in quarantined.json()["quarantined_bars"][0]["validation_errors"]
+
+    def test_negative_volume_is_rejected(self):
+        bad_bar = _bar_payload()
+        bad_bar["volume"] = -100
+
+        resp = client.post("/api/market-data/history/save", json={"bars": [bad_bar]})
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["inserted"] == 0
+        assert body["rejected_invalid"] == 1
+        assert any("negative" in reason for reason in body["rejected"][0]["reasons"])
+
+    def test_a_valid_bar_alongside_a_rejected_one_still_saves_the_valid_one(self):
+        good_bar = _bar_payload(timestamp="2026-08-10T04:00:00Z")
+        bad_bar = _bar_payload(timestamp="2026-08-11T04:00:00Z")
+        bad_bar["high"] = 1.0
+        bad_bar["low"] = 999.0
+
+        resp = client.post("/api/market-data/history/save", json={"bars": [good_bar, bad_bar]})
+
+        body = resp.json()
+        assert body["total"] == 2
+        assert body["inserted"] == 1
+        assert body["rejected_invalid"] == 1
 
 
 class TestGetStoredHistoricalBarsRoute:
