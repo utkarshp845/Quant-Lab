@@ -37,6 +37,23 @@ from app.api.market_data_stream import router as market_data_stream_router
 from app.api.research import router as research_router
 from app.ingestion.auto_ingest import run_ingestion_loop
 
+# v0.1.23: without this, every `app.*` logger.info()/.warning() call in
+# this codebase (auto-ingest's cycle-by-cycle results, its "disabled at
+# startup" notice, PairFailureTracker's escalation/recovery lines, ...)
+# was silently invisible -- Python's root logger defaults to WARNING
+# with no handler attached, so INFO records never even reach output,
+# and WARNING/ERROR records fall back to logging.lastResort's bare,
+# unformatted stderr line. Confirmed by a real run: the auto-ingest
+# "disabled" notice never appeared in server logs even with
+# AUTO_INGEST_ENABLED unset, before this fix. A no-op if something else
+# already configured the root logger (basicConfig() itself no-ops
+# without force=True when root already has a handler -- e.g. under
+# pytest, where the logging plugin installs its own capture handler
+# before this module is ever imported) -- this only takes effect for a
+# real `uvicorn app.main:app` process that hasn't configured logging
+# itself.
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+
 logger = logging.getLogger("app.main")
 
 

@@ -75,7 +75,7 @@ in the gitignored `.dev/`). Backend: `http://localhost:8000` (Swagger UI
 at `/docs`). Frontend: `http://localhost:5173`, expects the backend at
 `:8000` (`frontend/src/api/client.ts`).
 
-Backend tests: `cd backend && ./venv/bin/pytest` — 650+ tests, all
+Backend tests: `cd backend && ./venv/bin/pytest` — 672+ tests, all
 against synthetic/mocked data, no live network calls or real credentials
 required.
 
@@ -175,8 +175,9 @@ probability engine, Monte Carlo simulation, CSV option-chain import with
 an in-file long/short scanner, a swappable live/historical market-data
 provider layer (Alpaca/Massive/Schwab/CSV), real-time streaming quotes,
 historical-bar fetch/validate/quarantine/store/raw-audit, an opt-in
-unattended ingestion loop, Research v1 (hypothesis testing), and Feature
-Engine v1 (deterministic feature computation).
+unattended ingestion loop, a deep-range historical backfill script,
+Research v1 (hypothesis testing), and Feature Engine v1 (deterministic
+feature computation).
 
 **Not implemented, deliberately:** machine learning, authentication/user
 accounts, portfolio management, historical **options** data (equity bars
@@ -288,7 +289,35 @@ even for a record later quarantined.
 re-pulls a configured symbol/timeframe list on an interval, reusing the
 exact same fetch → validate → store path a manual click uses — off by
 default so a fresh checkout, test run, or CI never makes an outbound
-call.
+call. Built for *staying fresh* (a small trailing window, re-fetched
+every few minutes), not for building up deep history from nothing.
+Enabling it means the app process makes real, credentialed calls for as
+long as it's running, including every `--reload` restart — enable it in
+the `.env` a persistent server actually loads, not a throwaway
+dev/testing checkout. A pair that fails several cycles in a row (not
+just one transient blip) escalates from a routine WARNING to one ERROR
+log line (v0.1.23, `AUTO_INGEST_FAILURE_ALERT_THRESHOLD`, default 3
+consecutive cycles), and logs one INFO line the first cycle it recovers
+— so a genuinely stale credential doesn't fail silently forever at the
+same log level as a five-minute network blip.
+
+**Backfill:** `scripts/backfill_historical_data.py` (v0.1.22,
+`app/ingestion/backfill.py`) is the deep-history counterpart — a
+one-time (or re-run-any-time) pull of a wide date range, split into
+bounded chunks, through the identical fetch → validate → store
+pipeline, with 429 retry/backoff and per-chunk failure isolation so
+one bad chunk doesn't lose an otherwise-long run:
+
+```bash
+export ALPACA_API_KEY_ID=...
+export ALPACA_API_SECRET_KEY=...
+cd backend && ./venv/bin/python scripts/backfill_historical_data.py --provider alpaca
+# defaults: TSLA,NVDA, daily bars, last 2 years -- see --help for every flag
+```
+
+Safe to interrupt and re-run: already-saved bars are deduplicated by
+the same `UNIQUE(provider, symbol, timeframe, timestamp)` constraint
+every other ingestion path relies on.
 
 ## 10. What is intentionally NOT implemented yet
 
@@ -333,7 +362,7 @@ consumers built on top of it.
 
 ## 13. Testing
 
-`cd backend && ./venv/bin/pytest` — 650+ deterministic tests, all against
+`cd backend && ./venv/bin/pytest` — 672+ deterministic tests, all against
 synthetic fixtures or mocked HTTP, no live provider credentials or
 network access required anywhere in the suite. Manual, opt-in scripts
 that DO hit real provider APIs with your own credentials

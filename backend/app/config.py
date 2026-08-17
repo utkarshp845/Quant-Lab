@@ -82,6 +82,7 @@ DEFAULT_AUTO_INGEST_SYMBOLS = "TSLA,NVDA"
 DEFAULT_AUTO_INGEST_TIMEFRAMES = "1d"
 DEFAULT_AUTO_INGEST_INTERVAL_SECONDS = 300
 DEFAULT_AUTO_INGEST_LOOKBACK_DAYS = 5
+DEFAULT_AUTO_INGEST_FAILURE_ALERT_THRESHOLD = 3
 
 
 def get_auto_ingest_enabled() -> bool:
@@ -143,3 +144,19 @@ def get_auto_ingest_lookback_days() -> int:
     was down over a weekend, without asking for a provider's entire
     history every few minutes."""
     return int(os.environ.get("AUTO_INGEST_LOOKBACK_DAYS", str(DEFAULT_AUTO_INGEST_LOOKBACK_DAYS)))
+
+
+def get_auto_ingest_failure_alert_threshold() -> int:
+    """How many consecutive failed cycles the SAME symbol/timeframe pair
+    needs before app/ingestion/auto_ingest.py's PairFailureTracker
+    escalates its log line from WARNING to ERROR (v0.1.23). A transient
+    blip (a rate limit, a momentary network issue) usually clears within
+    a cycle or two and was already visible at WARNING; a credential
+    that's actually gone stale (an expired Schwab refresh token nobody
+    re-ran, a revoked API key) keeps failing cycle after cycle and
+    deserves to stop blending into that routine noise. Reads
+    AUTO_INGEST_FAILURE_ALERT_THRESHOLD, defaulting to 3 consecutive
+    cycles -- roughly 15 minutes at the default 5-minute interval."""
+    return int(
+        os.environ.get("AUTO_INGEST_FAILURE_ALERT_THRESHOLD", str(DEFAULT_AUTO_INGEST_FAILURE_ALERT_THRESHOLD))
+    )
