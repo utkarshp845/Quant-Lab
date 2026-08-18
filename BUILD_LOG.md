@@ -22,6 +22,46 @@ design decision, and what it explicitly did NOT do if that matters.
 
 ---
 
+## Milestone — First real OOS experiment (2026-08-18)
+
+No code changed for this entry — it records an EVENT, not a shipped
+version: the first real, end-to-end run of OOS Evaluation v1
+(v0.1.31/v0.1.32) against real market data, through the actual HTTP
+API, on a hypothesis defined and frozen entirely from development data
+before any holdout contact. See `EXPERIMENTS.md` for the full record
+(hypothesis, exact conditions/thresholds, development statistics
+including Statistical Validation V1/V2, frozen provenance, OOS
+results, comparison table, verdict, and integrity check) — kept as its
+own file, not folded into this changelog, because it is a scientific
+log entry, not a software change, and because
+`backend/data/historical_bars.db` (where the real experiment/
+partition/evaluation rows actually live) is gitignored local data, so
+this is the only durable, version-controlled record of what ran.
+
+In brief: real TSLA 5-minute bars were fetched from Alpaca (4,387
+bars, 2026-06-01 through 2026-08-14 — no synthetic data), split into a
+development period (June 1 – July 31) and a holdout period (August 1 –
+14) via a real `OOSPartition`. A single hypothesis
+("short-term decline + high relative volume predicts continued
+weakness") was defined, its thresholds chosen once from domain
+convention before inspecting this dataset's own distribution, and run
+through Research/Backtesting/Statistical Validation V1+V2 on
+development data only — the properly-adjusted (episode-level,
+dependence-corrected) result was statistically negligible (Cohen's d ≈
+−0.01, p ≈ 0.93–1.00). The hypothesis was frozen as-is rather than
+modified, linked to the partition, and evaluated exactly once against
+holdout via `POST /research/experiments/{id}/oos-evaluate` with no
+request body — 7 raw signals (4 independent episodes), mean return
+−0.48%. Verdict: **INCONCLUSIVE** (development evidence was already
+null; the holdout sample is far too small for an independent
+conclusion) — recommendation: collect more holdout data before
+revisiting. Every integrity check (hash continuity, snapshot
+immutability, append-only evaluation, zero writes to development/
+holdout bars or to `historical_features` for the holdout range, no
+post-freeze mutation, holdout touched exactly once) passed.
+
+**Files:** `EXPERIMENTS.md` (new).
+
 ## v0.1.32 — OOS Evaluation V1 Audit (2026-08-18)
 
 An adversarial validation audit of v0.1.31 (holdout access tracing,

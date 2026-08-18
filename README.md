@@ -1072,6 +1072,20 @@ provably unaffected by a change far later in holdout, deterministic
 re-runs, append-only persistence, and the full HTTP flow including the
 adversarial-request-body-is-ignored proof.
 
+**First real experiment (2026-08-18):** a full real-data run — real
+TSLA 5-minute bars from Alpaca, a hypothesis defined and frozen
+entirely from development-period evidence before any holdout contact,
+evaluated exactly once via `POST /research/experiments/{id}/oos-evaluate`
+with no request body. Verdict: **INCONCLUSIVE** (the development
+evidence was already statistically negligible once properly adjusted
+for signal clustering, and the 14-day holdout produced only 4
+independent episodes — too few for any independent conclusion). See
+`EXPERIMENTS.md` for the full record (exact hypothesis, thresholds,
+development statistics, frozen provenance, OOS statistics, comparison
+table, and integrity check) — kept as its own file rather than here
+because `backend/data/historical_bars.db`, where the real rows this
+describes actually live, is gitignored local data.
+
 ## Known limitations
 
 - `npm audit` flags a moderate/high `esbuild` advisory (bundled by Vite
