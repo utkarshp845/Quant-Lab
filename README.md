@@ -8,7 +8,10 @@ layer** (hypothesis testing + feature computation) built on top of it.
 **This is not a trading bot.** No brokerage connection, no order
 execution, no autonomous buy/sell recommendations, no user accounts. See
 [10. What is intentionally NOT implemented](#10-what-is-intentionally-not-implemented-yet)
-and [`BUILD_LOG.md`](BUILD_LOG.md) for the full change history.
+and [`BUILD_LOG.md`](BUILD_LOG.md) for the full change history. Trying
+to *do* something (fetch data, create an experiment, run a backtest)?
+See [`USER_GUIDE.md`](USER_GUIDE.md) instead — this file explains how
+the app is built, that one walks you through using it.
 
 ---
 

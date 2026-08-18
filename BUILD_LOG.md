@@ -22,6 +22,45 @@ design decision, and what it explicitly did NOT do if that matters.
 
 ---
 
+## v0.1.26 — USER_GUIDE.md + Backtesting v1 audit (2026-08-18)
+
+A validation audit of the v0.1.25 Backtesting v1 implementation against
+data-integrity, look-ahead, feature/research-consistency, signal-
+correctness, outcome-calculation, result-integrity, testing, and
+architecture criteria — no code changes were needed (no FAILURES
+found); two non-critical, pre-existing-and-inherited-from-Research-v1
+behaviors were confirmed and documented rather than "fixed": (1)
+persistent conditions produce one signal per bar they hold true, not
+one per transition, so consecutive/overlapping signals are expected,
+not a bug; (2) forward outcome windows are bar-count, not
+calendar-time, so a window can silently span a session boundary.
+
+Followed by a real, end-to-end run against live Alpaca data (not
+synthetic fixtures): 4,387 real 5-minute TSLA bars fetched and saved
+(0 rejected, 87 flagged), features computed, a grounded hypothesis
+picked by querying the actual persisted feature distribution first
+(not an arbitrary threshold), run through both Research v1 (124
+events) and Backtesting v1 (windows 5/15/30/60, real aggregate stats
+per window, including a window with fewer measurable signals than the
+others — confirming the "insufficient future data is simply absent,
+never fabricated" guarantee on real data). Both audit caveats above
+were directly observed in the real signal data (two signals five
+minutes apart, and a 60-bar window's outcome landing on the next
+calendar day).
+
+Added `USER_GUIDE.md` — a new, third top-level doc (alongside README's
+"how it's built" and this file's "what changed, when") for "how do I
+actually do X": fetching/saving historical data, computing features,
+creating and running a Research experiment, and — the most detailed
+section, since Backtesting v1 has no frontend UI yet — creating and
+running a Backtest and reading its results correctly. Every example in
+it is real output from the run above, not invented numbers.
+
+**Files:** `USER_GUIDE.md` (new), `README.md` (pointer to it),
+`.claude/launch.json` (fixed to point at this worktree's own
+`backend/venv`/`.env` instead of the main checkout's — was silently
+broken for any worktree).
+
 ## v0.1.25 — Backtesting v1 (2026-08-18)
 
 An event-based historical backtester layered on top of Research v1 and
