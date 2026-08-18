@@ -22,6 +22,67 @@ design decision, and what it explicitly did NOT do if that matters.
 
 ---
 
+## v0.1.27 — Statistical Validation v1 (2026-08-18)
+
+The layer after Backtesting v1: does an already-run backtest's
+conditioned population actually look different from TSLA's own
+unconditional behavior, by more than random variation would explain?
+New `app/statistical_validation/` -- modifies nothing in
+`app/backtesting/`, `app/features/`, or `app/research/`, and adds no
+database table; every report is recomputed on demand from the same
+bars/features/signals a real backtest already used.
+
+The central correction this version makes: a research condition that
+stays true for several consecutive bars produces one raw signal PER
+BAR, not one per onset (confirmed identical to Research v1's own
+engine behavior during the Backtesting v1 audit) -- those signals are
+correlated, not independent draws. `app/statistical_validation/
+episodes.py` formalizes the non-overlapping "episode" rule used
+informally in Baseline Analysis V1 (a signal joins the previous episode
+only if it is exactly one bar-interval later; each episode's first
+signal is its representative), and every confidence interval, p-value,
+and effect size in this version uses that episode-level sample --
+while still reporting the raw signal count alongside it, never hiding
+it.
+
+`app/statistical_validation/baseline.py` builds the unconditional
+baseline by calling the real, UNMODIFIED `run_backtest()` with a
+trivial always-true control condition (`volume.volume >= 0`) rather
+than re-deriving forward-return math a second time -- the baseline
+gets the identical next-bar-open entry rule, window definitions, and
+insufficient-future-data exclusions a real backtest already used.
+`app/statistical_validation/resampling.py` (numpy-vectorized, always
+seeded via a caller-supplied `numpy.random.Generator` -- same seed and
+data reproduce an identical report every time, extending this app's
+existing "deterministic and reproducible" rule to randomized inference)
+provides a percentile bootstrap CI for the mean-return and win-rate
+differences at every horizon, and, at one designated PRIMARY horizon
+(5 bars by default, treated as the single pre-specified hypothesis --
+15/30/60 are always labeled exploratory, never silently promoted), a
+two-sided permutation test and Cohen's d -- computed on the raw signal
+population too, side by side, so the report shows exactly how much the
+inference changes once clustering is corrected for. The episode-level
+result is always the authoritative one.
+
+Run for real against the existing TSLA experiment (`return_15m <=
+-0.5% AND relative_volume > 1.5x`, 124 raw signals / 65 episodes): the
+episode-level 5-bar permutation test returned p=0.2612 (not small by
+any conventional threshold) and Cohen's d=-0.14 ("negligible") -- the
+5-bar effect that looked most coherent in Baseline Analysis V1's raw
+view does not clearly survive once clustering is corrected for. A
+sobering, honest result -- reported as such, not adjusted or re-tested
+until it looked better.
+
+**Files:** `app/models/statistical_validation.py`,
+`app/statistical_validation/{episodes,baseline,resampling,engine}.py`,
+`scripts/run_statistical_validation.py`.
+**Tests:** `tests/test_statistical_validation_*.py` (43 new tests --
+episode-grouping rule in isolation, bootstrap/permutation determinism
+and structural correctness, hand-verified Cohen's d, and a full
+synthetic Feature-Engine-to-Research-to-Backtesting-to-Statistical-
+Validation pipeline including stale-data detection) -- 856 passing at
+merge (was 813; zero existing files modified).
+
 ## v0.1.26 — USER_GUIDE.md + Backtesting v1 audit (2026-08-18)
 
 A validation audit of the v0.1.25 Backtesting v1 implementation against

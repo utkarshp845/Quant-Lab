@@ -93,7 +93,7 @@ in the gitignored `.dev/`). Backend: `http://localhost:8000` (Swagger UI
 at `/docs`). Frontend: `http://localhost:5173`, expects the backend at
 `:8000` (`frontend/src/api/client.ts`).
 
-Backend tests: `cd backend && ./venv/bin/pytest` — 813+ tests, all
+Backend tests: `cd backend && ./venv/bin/pytest` — 856+ tests, all
 against synthetic/mocked data, no live network calls or real credentials
 required.
 
@@ -386,7 +386,7 @@ consumers built on top of it.
 
 ## 13. Testing
 
-`cd backend && ./venv/bin/pytest` — 813+ deterministic tests, all against
+`cd backend && ./venv/bin/pytest` — 856+ deterministic tests, all against
 synthetic fixtures or mocked HTTP, no live provider credentials or
 network access required anywhere in the suite. Manual, opt-in scripts
 that DO hit real provider APIs with your own credentials
@@ -615,6 +615,64 @@ signal's computed fields; a condition true on the dataset's last bar
 produces no signal), per-window aggregation (including zero/one-signal
 None handling), feature-contract-version reproducibility, persistence
 round-trips, and the full create → run → inspect HTTP flow.
+
+## 18. Statistical Validation v1
+
+Answers one question about an already-run Backtest: does the
+conditioned population look different from TSLA's own unconditional
+behavior by more than random variation would explain? Consumes
+Backtesting v1's already-persisted output — `app/statistical_validation/`
+never modifies the Feature Engine, Research, or Backtesting layers, and
+adds no database table of its own; every report is recomputed on
+demand from the same bars/features/signals a real backtest already
+used (`scripts/run_statistical_validation.py --experiment-id ...
+--backtest-id ...`).
+
+**Episode-level inference, not raw signals:** a research condition
+that stays true for several consecutive bars produces one signal per
+bar, not one per onset (see [§17](#17-backtesting-v1) and
+`app/statistical_validation/episodes.py`) — those signals are
+correlated, not independent. Every confidence interval, p-value, and
+effect size here uses the non-overlapping EPISODE-level sample (one
+observation per contiguous run of signals, its first bar), never the
+raw, clustered signal count — while still reporting both counts
+side by side so neither is silently hidden.
+
+**Unconditional baseline**, built without reimplementing any
+forward-return math: `app/statistical_validation/baseline.py` calls
+the real, unmodified `run_backtest()` with a trivial always-true
+control condition (`volume.volume >= 0`), so the baseline gets the
+identical next-bar-open entry rule, window definitions, and
+insufficient-future-data exclusions a real experiment's backtest
+already used.
+
+**Inference, per horizon** (`app/statistical_validation/resampling.py`,
+`numpy`-vectorized, always seeded — same seed and data reproduce an
+identical report, never a different answer per run): a percentile
+bootstrap 95% CI for the conditioned-vs-baseline mean-return
+difference and for the win-rate difference. At the one designated
+PRIMARY horizon (5 bars by default — configurable, but treated as the
+single pre-specified hypothesis, never picked after seeing results): a
+two-sided permutation test (H0: the condition carries no information
+beyond baseline) and Cohen's d, computed on the raw signal population
+too, side by side, so a reader can see exactly how much the inference
+changes once clustering is corrected for — the episode-level result is
+always the authoritative one.
+
+**Not implemented, on purpose:** multiple-comparison correction across
+horizons (only one horizon is ever treated as confirmatory), any claim
+of causality, parameter/threshold optimization, and any persistence of
+a report — a report is a derived read, always recomputed, never a
+row that could silently go stale next to the backtest it describes.
+
+**Tests:** `tests/test_statistical_validation_*.py` (43 tests) —
+the episode-grouping rule in isolation, bootstrap/permutation
+determinism and structural correctness (CI ordering, p-value bounds,
+a hand-verified Cohen's d), and a full synthetic pipeline (real
+Feature Engine → real Research → real Backtesting v1 → Statistical
+Validation) exercising sample-size reconciliation, exactly-one-primary-
+horizon, and error handling (a stale/tampered persisted backtest is
+detected and rejected, never silently trusted).
 
 ## Known limitations
 
