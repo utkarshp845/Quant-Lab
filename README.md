@@ -93,7 +93,7 @@ in the gitignored `.dev/`). Backend: `http://localhost:8000` (Swagger UI
 at `/docs`). Frontend: `http://localhost:5173`, expects the backend at
 `:8000` (`frontend/src/api/client.ts`).
 
-Backend tests: `cd backend && ./venv/bin/pytest` — 813+ tests, all
+Backend tests: `cd backend && ./venv/bin/pytest` — 902+ tests, all
 against synthetic/mocked data, no live network calls or real credentials
 required.
 
@@ -386,7 +386,7 @@ consumers built on top of it.
 
 ## 13. Testing
 
-`cd backend && ./venv/bin/pytest` — 813+ deterministic tests, all against
+`cd backend && ./venv/bin/pytest` — 902+ deterministic tests, all against
 synthetic fixtures or mocked HTTP, no live provider credentials or
 network access required anywhere in the suite. Manual, opt-in scripts
 that DO hit real provider APIs with your own credentials
@@ -615,6 +615,125 @@ signal's computed fields; a condition true on the dataset's last bar
 produces no signal), per-window aggregation (including zero/one-signal
 None handling), feature-contract-version reproducibility, persistence
 round-trips, and the full create → run → inspect HTTP flow.
+
+## 18. Statistical Validation v1
+
+Answers one question about an already-run Backtest: does the
+conditioned population look different from TSLA's own unconditional
+behavior by more than random variation would explain? Consumes
+Backtesting v1's already-persisted output — `app/statistical_validation/`
+never modifies the Feature Engine, Research, or Backtesting layers, and
+adds no database table of its own; every report is recomputed on
+demand from the same bars/features/signals a real backtest already
+used (`scripts/run_statistical_validation.py --experiment-id ...
+--backtest-id ...`).
+
+**Episode-level inference, not raw signals:** a research condition
+that stays true for several consecutive bars produces one signal per
+bar, not one per onset (see [§17](#17-backtesting-v1) and
+`app/statistical_validation/episodes.py`) — those signals are
+correlated, not independent. Every confidence interval, p-value, and
+effect size here uses the non-overlapping EPISODE-level sample (one
+observation per contiguous run of signals, its first bar), never the
+raw, clustered signal count — while still reporting both counts
+side by side so neither is silently hidden.
+
+**Unconditional baseline**, built without reimplementing any
+forward-return math: `app/statistical_validation/baseline.py` calls
+the real, unmodified `run_backtest()` with a trivial always-true
+control condition (`volume.volume >= 0`), so the baseline gets the
+identical next-bar-open entry rule, window definitions, and
+insufficient-future-data exclusions a real experiment's backtest
+already used.
+
+**Inference, per horizon** (`app/statistical_validation/resampling.py`,
+`numpy`-vectorized, always seeded — same seed and data reproduce an
+identical report, never a different answer per run): a percentile
+bootstrap 95% CI for the conditioned-vs-baseline mean-return
+difference and for the win-rate difference. At the one designated
+PRIMARY horizon (5 bars by default — configurable, but treated as the
+single pre-specified hypothesis, never picked after seeing results): a
+two-sided permutation test (H0: the condition carries no information
+beyond baseline) and Cohen's d, computed on the raw signal population
+too, side by side, so a reader can see exactly how much the inference
+changes once clustering is corrected for — the episode-level result is
+always the authoritative one.
+
+**Not implemented, on purpose:** multiple-comparison correction across
+horizons (only one horizon is ever treated as confirmatory), any claim
+of causality, parameter/threshold optimization, and any persistence of
+a report — a report is a derived read, always recomputed, never a
+row that could silently go stale next to the backtest it describes.
+
+**Tests:** `tests/test_statistical_validation_*.py` (43 tests) —
+the episode-grouping rule in isolation, bootstrap/permutation
+determinism and structural correctness (CI ordering, p-value bounds,
+a hand-verified Cohen's d), and a full synthetic pipeline (real
+Feature Engine → real Research → real Backtesting v1 → Statistical
+Validation) exercising sample-size reconciliation, exactly-one-primary-
+horizon, and error handling (a stale/tampered persisted backtest is
+detected and rejected, never silently trusted).
+
+## 19. Statistical Validation v2
+
+Corrects V1's one flagged weakness (see §18's own Limitations): V1's
+baseline treated every eligible bar as an independent observation
+despite adjacent bars' forward-return windows overlapping heavily —
+V1's own report on the real TSLA experiment flagged this explicitly
+rather than silently trusting the number. `app/statistical_validation/v2/`
+is additive only — it does not modify V1
+(`app/statistical_validation/{episodes,baseline,resampling,engine}.py`),
+the Feature Engine, Research, or Backtesting, and reuses V1's episode
+definition and unconditional-baseline construction unchanged.
+
+**Two independent, clearly-labeled dependence corrections for the
+baseline side** (the conditioned side keeps V1's episode-level
+treatment exactly):
+
+- **Method A — non-overlapping windows** (`app/statistical_validation/v2/baseline.py`):
+  subsamples V1's own baseline down to entries whose forward-return
+  windows never overlap. Once non-overlapping, V1's own, unmodified
+  bootstrap/permutation functions apply directly — no new statistical
+  machinery needed.
+- **Method B — moving block bootstrap** (`app/statistical_validation/v2/resampling.py`):
+  resamples the full, chronologically-ordered, overlapping baseline
+  series in contiguous blocks (length = 4× the horizon, a fixed,
+  documented rule) rather than individual points — the standard
+  technique (Künsch 1989; Politis & Romano) for a valid bootstrap
+  distribution from serially dependent data. Its hypothesis test uses
+  the standard "H0-centered bootstrap test" construction (Hall &
+  Wilson 1991): both samples are shifted to a common mean before
+  resampling, since naively permuting individual points in an
+  autocorrelated series would produce an invalidly narrow (falsely
+  confident) null distribution.
+
+Run for real against the same TSLA experiment (5-bar horizon, 65
+episodes): Method A gives p=0.2526, Method B gives p=0.4140 — both
+methods agree the 5-bar effect does not clearly stand out from
+baseline once dependence is handled correctly on both sides, and the
+two methods' conclusions agree (`conclusion_changes_materially: False`).
+
+**Post-hoc power analysis** (`app/statistical_validation/v2/power.py`):
+a standard closed-form minimum-detectable-effect-size calculation (no
+scipy dependency — two fixed, tabulated z-quantiles) — with 65
+episodes and 946 effective baseline observations, this study could
+reliably detect a Cohen's d of ≈0.36 at 80% power; the observed d
+(≈0.15) is below that threshold, meaning a null result here is
+unsurprising on power grounds alone, never interpreted as evidence
+that no effect exists.
+
+15/30/60-bar horizons remain descriptive only — no CI, no p-value, no
+effect size at any horizon but the primary one, per this feature's own
+scope.
+
+**Tests:** `tests/test_statistical_validation_v2_*.py` (46 tests) —
+non-overlapping selection (dense spacing, real gaps, out-of-order
+input), moving-block-bootstrap determinism and a hand-verified
+periodic-series exact-mean case, the H0-shift p-value's invariance to
+a common additive shift, the power formula against a hand-computed
+value, and a full synthetic pipeline exercising population-count
+reconciliation, both methods' CI/p-value validity, and the same
+error-handling guarantees as V1.
 
 ## Known limitations
 

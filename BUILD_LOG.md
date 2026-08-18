@@ -22,6 +22,139 @@ design decision, and what it explicitly did NOT do if that matters.
 
 ---
 
+## v0.1.28 — Statistical Validation v2 (2026-08-18)
+
+Corrects the one weakness V1's own report flagged against itself: V1's
+unconditional baseline treated ~4,381 heavily overlapping per-bar
+forward-return windows as independent observations, while the
+conditioned side correctly used 65 non-overlapping episodes. New
+`app/statistical_validation/v2/` -- purely additive: does not modify
+V1 (`app/statistical_validation/{episodes,baseline,resampling,
+engine}.py`, `app/models/statistical_validation.py`), the Feature
+Engine, Research, or Backtesting engines, and reuses V1's episode
+definition and unconditional-baseline construction completely
+unchanged.
+
+Two independent, clearly-labeled dependence corrections for the
+baseline side (conditioned side keeps V1's episode-level treatment
+exactly, per this version's own explicit requirement):
+
+- **Method A -- non-overlapping windows** (`app/statistical_validation/
+  v2/baseline.py`): greedily subsamples V1's own baseline to entries
+  whose forward-return windows never overlap (handles real gaps in the
+  underlying data via timestamp arithmetic, not an assumption of dense
+  spacing). Once non-overlapping, V1's OWN, unmodified bootstrap/
+  permutation functions (`app.statistical_validation.resampling`)
+  apply directly -- no new statistical machinery for this method.
+- **Method B -- moving block bootstrap** (`app/statistical_validation/
+  v2/resampling.py`): resamples the FULL, chronologically-ordered,
+  overlapping baseline series in contiguous blocks (length = 4x the
+  horizon, a fixed, documented rule -- long enough to span more than
+  one mechanically-overlapping cluster, short enough to leave many
+  valid start positions in a multi-thousand-observation series) rather
+  than individual points -- the standard technique (Kunsch 1989;
+  Politis & Romano) for a valid bootstrap distribution from serially
+  dependent data. Its hypothesis test uses the "H0-centered bootstrap
+  test" construction (Hall & Wilson 1991): both samples are shifted to
+  share one common mean before resampling, since naively permuting
+  individual points in an autocorrelated series -- what a plain
+  permutation test does -- would destroy real autocorrelation and
+  produce an invalidly narrow, falsely-confident null distribution.
+
+`app/statistical_validation/v2/power.py` adds a simple, closed-form
+post-hoc minimum-detectable-effect-size calculation (no scipy
+dependency -- two fixed, tabulated normal quantiles, consistent with
+this app's existing judgment on when a dependency is worth adding) --
+explicitly a statement about what this sample size COULD have
+detected, never evidence that H0 is true.
+
+Run for real against the same TSLA experiment (`return_15m <= -0.5%
+AND relative_volume > 1.5x`, 65 episodes, 5-bar primary horizon):
+Method A gives p=0.2526 (n_baseline=946, non-overlapping), Method B
+gives p=0.4140 (n_baseline=4,381, block-resampled, block_length=20) --
+both agree the effect does not clearly stand out from baseline once
+dependence is handled correctly on both sides (`conclusion_changes_
+materially: False`), pushing V1's already-cautious p=0.2612 finding
+further toward "not distinguishable from noise," not away from it.
+Power analysis: minimum detectable Cohen's d at 80% power is ~0.36;
+the observed |d|=0.15 is below that threshold, so the null result is
+unsurprising on power grounds alone (recorded as a sensitivity
+statement, not interpreted as confirming no effect exists).
+
+**Files:** `app/models/statistical_validation_v2.py`,
+`app/statistical_validation/v2/{baseline,resampling,power,engine}.py`,
+`scripts/run_statistical_validation_v2.py`.
+**Tests:** `tests/test_statistical_validation_v2_*.py` (46 new tests --
+non-overlapping selection incl. real gaps and out-of-order input,
+moving-block-bootstrap determinism plus a hand-verified periodic-series
+exact-mean case, H0-shift p-value invariance to a common additive
+shift, the power formula against a hand-computed value, and a full
+synthetic Feature-Engine-to-Research-to-Backtesting-to-Statistical-
+Validation-V2 pipeline) -- 902 passing at merge (was 856; zero existing
+files modified, confirmed via `git diff --stat` showing only new
+files).
+
+## v0.1.27 — Statistical Validation v1 (2026-08-18)
+
+The layer after Backtesting v1: does an already-run backtest's
+conditioned population actually look different from TSLA's own
+unconditional behavior, by more than random variation would explain?
+New `app/statistical_validation/` -- modifies nothing in
+`app/backtesting/`, `app/features/`, or `app/research/`, and adds no
+database table; every report is recomputed on demand from the same
+bars/features/signals a real backtest already used.
+
+The central correction this version makes: a research condition that
+stays true for several consecutive bars produces one raw signal PER
+BAR, not one per onset (confirmed identical to Research v1's own
+engine behavior during the Backtesting v1 audit) -- those signals are
+correlated, not independent draws. `app/statistical_validation/
+episodes.py` formalizes the non-overlapping "episode" rule used
+informally in Baseline Analysis V1 (a signal joins the previous episode
+only if it is exactly one bar-interval later; each episode's first
+signal is its representative), and every confidence interval, p-value,
+and effect size in this version uses that episode-level sample --
+while still reporting the raw signal count alongside it, never hiding
+it.
+
+`app/statistical_validation/baseline.py` builds the unconditional
+baseline by calling the real, UNMODIFIED `run_backtest()` with a
+trivial always-true control condition (`volume.volume >= 0`) rather
+than re-deriving forward-return math a second time -- the baseline
+gets the identical next-bar-open entry rule, window definitions, and
+insufficient-future-data exclusions a real backtest already used.
+`app/statistical_validation/resampling.py` (numpy-vectorized, always
+seeded via a caller-supplied `numpy.random.Generator` -- same seed and
+data reproduce an identical report every time, extending this app's
+existing "deterministic and reproducible" rule to randomized inference)
+provides a percentile bootstrap CI for the mean-return and win-rate
+differences at every horizon, and, at one designated PRIMARY horizon
+(5 bars by default, treated as the single pre-specified hypothesis --
+15/30/60 are always labeled exploratory, never silently promoted), a
+two-sided permutation test and Cohen's d -- computed on the raw signal
+population too, side by side, so the report shows exactly how much the
+inference changes once clustering is corrected for. The episode-level
+result is always the authoritative one.
+
+Run for real against the existing TSLA experiment (`return_15m <=
+-0.5% AND relative_volume > 1.5x`, 124 raw signals / 65 episodes): the
+episode-level 5-bar permutation test returned p=0.2612 (not small by
+any conventional threshold) and Cohen's d=-0.14 ("negligible") -- the
+5-bar effect that looked most coherent in Baseline Analysis V1's raw
+view does not clearly survive once clustering is corrected for. A
+sobering, honest result -- reported as such, not adjusted or re-tested
+until it looked better.
+
+**Files:** `app/models/statistical_validation.py`,
+`app/statistical_validation/{episodes,baseline,resampling,engine}.py`,
+`scripts/run_statistical_validation.py`.
+**Tests:** `tests/test_statistical_validation_*.py` (43 new tests --
+episode-grouping rule in isolation, bootstrap/permutation determinism
+and structural correctness, hand-verified Cohen's d, and a full
+synthetic Feature-Engine-to-Research-to-Backtesting-to-Statistical-
+Validation pipeline including stale-data detection) -- 856 passing at
+merge (was 813; zero existing files modified).
+
 ## v0.1.26 — USER_GUIDE.md + Backtesting v1 audit (2026-08-18)
 
 A validation audit of the v0.1.25 Backtesting v1 implementation against
