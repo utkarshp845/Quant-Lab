@@ -1,16 +1,21 @@
 """API routes for Research v1: define -> run -> inspect a falsifiable
-hypothesis against the existing normalized historical bar dataset.
+hypothesis against the existing normalized historical bar dataset and
+its already-computed Feature Engine values.
 
     POST /research/experiments               create a DRAFT experiment
-    POST /research/experiments/{id}/run       execute it against stored bars
+    POST /research/experiments/{id}/run       execute it against stored bars + features
     GET  /research/experiments                every saved experiment, newest first
     GET  /research/experiments/{id}           one experiment (with results, once completed)
     GET  /research/experiments/{id}/events    the individual signal observations
 
-Reads ONLY from app.storage.historical_bar_repository -- the existing
-normalized historical dataset -- never app.storage.raw_ingestion_repository
-(the audit/reprocessing layer) and never writes to `historical_bars` at
-all: Research must never modify historical data (spec section 8).
+Reads ONLY from app.storage.historical_bar_repository (bars) and
+app.storage.feature_repository (already-computed FeatureRecords) --
+never app.storage.raw_ingestion_repository (the audit/reprocessing
+layer), never app.features.engine (v0.1.24's "Do NOT recalculate
+features inside Research" boundary -- features arrive here
+pre-computed, exactly like bars always have), and never writes to
+`historical_bars`/`historical_features` at all: Research must never
+modify historical data (spec section 8).
 
 RUN's exception handling deliberately differs from every other route in
 this app (contrast app/api/historical_data.py's exception mapping,
@@ -29,17 +34,44 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, HTTPException
 
 from app.api.historical_data import ALLOWED_SYMBOLS, ALLOWED_TIMEFRAMES
+from app.features.vocabulary import get_feature_definition
 from app.models.research import (
     Experiment,
     ExperimentCreateRequest,
     ExperimentEventsResponse,
     ExperimentStatus,
+    FeatureCondition,
 )
 from app.research import metrics
 from app.research.engine import run_experiment
-from app.storage import historical_bar_repository, research_repository
+from app.storage import feature_repository, historical_bar_repository, research_repository
 
 router = APIRouter()
+
+
+def _validate_condition(condition: FeatureCondition) -> None:
+    """v0.1.24's replacement for the old metric-regex check: `feature_id`
+    must be a real, known entry in the Feature Engine's vocabulary
+    (app/features/vocabulary.py), and `operator` must be one that
+    feature's OWN value type actually supports (requirement 4 -- a
+    boolean feature only ever offers "=", a numeric one offers the full
+    set including "between"). Both checks need app/features/vocabulary.py,
+    which app/models/research.py deliberately does not import (see that
+    module's docstring) -- this is the one place they happen, the same
+    layer that already owns symbol/timeframe scope checks below."""
+    try:
+        definition = get_feature_definition(condition.feature_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    if condition.operator.value not in definition.supported_operators:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Operator {condition.operator.value!r} is not supported for feature {condition.feature_id!r} "
+                f"({definition.value_type.value}). Allowed: {list(definition.supported_operators)}"
+            ),
+        )
 
 
 def _validate_request(request: ExperimentCreateRequest) -> None:
@@ -47,10 +79,11 @@ def _validate_request(request: ExperimentCreateRequest) -> None:
     the same "validate at the route, against the same ALLOWED_* sets
     every other route already uses" convention as
     app/api/historical_data.py / app/api/historical_storage.py, plus
-    the two v1-specific checks the metric windows themselves require
-    (see app/research/metrics.py::bars_for_window() -- a window that
-    is not a whole multiple of the experiment's own timeframe has no
-    honest answer and must be rejected here, not silently rounded)."""
+    v0.1.24's per-condition feature_id/operator checks and the outcome
+    window check the metric math itself requires (see
+    app/research/metrics.py::bars_for_window() -- a window that is not
+    a whole multiple of the experiment's own timeframe has no honest
+    answer and must be rejected here, not silently rounded)."""
     symbol = request.symbol.upper()
     if symbol not in ALLOWED_SYMBOLS:
         raise HTTPException(
@@ -63,9 +96,10 @@ def _validate_request(request: ExperimentCreateRequest) -> None:
     if request.end_date < request.start_date:
         raise HTTPException(status_code=400, detail="end_date must not be before start_date")
 
+    for condition in request.conditions:
+        _validate_condition(condition)
+
     try:
-        window_minutes = metrics.parse_trailing_return_metric(request.condition.metric)
-        metrics.bars_for_window(window_minutes, request.timeframe)
         metrics.bars_for_window(request.outcome.horizon_minutes, request.timeframe)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -108,7 +142,14 @@ def run_experiment_route(experiment_id: str) -> Experiment:
     once on the same id -- see app/storage/research_repository.py's
     replace_events() -- so re-running the same experiment against the
     same, unchanged dataset always produces the same events and results
-    (spec completion criterion 10)."""
+    (spec completion criterion 10).
+
+    v0.1.24: fetches BOTH the experiment's bars (historical_bar_repository,
+    unchanged -- still needed for signal_price and the outcome's
+    forward_return) AND its already-computed FeatureRecords
+    (feature_repository) for the identical symbol/timeframe/provider/
+    date-range, and hands both to the engine. Never calls
+    app/features/engine.py -- see this module's own docstring."""
     experiment = research_repository.get_experiment(experiment_id)
     if experiment is None:
         raise HTTPException(status_code=404, detail=f"No experiment with id {experiment_id!r}")
@@ -123,13 +164,22 @@ def run_experiment_route(experiment_id: str) -> Experiment:
             start=experiment.start_date,
             end=experiment.end_date,
         )
+        feature_records = feature_repository.get_features(
+            symbol=experiment.symbol,
+            timeframe=experiment.timeframe,
+            provider=experiment.provider,
+            start=experiment.start_date,
+            end=experiment.end_date,
+        )
         events, results = run_experiment(
             experiment_id=experiment.id,
             symbol=experiment.symbol,
             timeframe=experiment.timeframe,
-            condition=experiment.condition,
+            conditions=experiment.conditions,
             outcome=experiment.outcome,
             bars=bars,
+            feature_records=feature_records,
+            feature_contract_version=experiment.feature_contract_version,
         )
     except Exception as exc:  # noqa: BLE001 -- see module docstring: a run failing is a persisted FAILED status, not a 500
         research_repository.update_experiment_run(

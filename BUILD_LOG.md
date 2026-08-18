@@ -22,6 +22,80 @@ design decision, and what it explicitly did NOT do if that matters.
 
 ---
 
+## v0.1.24 — Feature ↔ Research integration (2026-08-18)
+
+Made the Feature Engine's own vocabulary the single source of truth
+for Research conditions, closing the gap where Research hardcoded a
+tiny, separate metric language ("{N}m_return" only, parsed by regex)
+instead of referencing the 31 features the Feature Engine already
+computes and persists. New `app/features/vocabulary.py` exposes every
+leaf `FeatureRecord` field (not an arbitrary 25 — the real count is 31:
+4 PRICE + 3 VOLUME + 4 VOLATILITY + 16 MARKET CONTEXT + 4 PRICE
+POSITION) as a `FeatureDefinition` (stable `feature_id` in
+`{category}.{field}` form, name, type, description, supported
+operators, contract version) via a new `GET /features/vocabulary`
+route. `Condition` (metric/operator/threshold, one per experiment)
+became `FeatureCondition` (feature_id/operator/value(/value_max), a
+LIST per experiment, AND-combined) — `FeatureConditionOperator` adds
+`between` to the numeric set and restricts a boolean feature to `=`
+only (no boolean feature exists yet; the type system is ready for one).
+The condition builder's feature and operator dropdowns are now
+populated entirely from the backend vocabulary — the frontend hardcodes
+none of it, and the previously-permanently-disabled "+ Add condition"
+button is real now (AND only, per spec — no OR/nesting).
+
+The engine (`run_experiment()`) now evaluates conditions against
+already-computed, already-persisted `FeatureRecord`s (fetched via
+`feature_repository.get_features()`, matched to bars by exact
+timestamp) instead of recomputing a trailing return directly off bars
+— "Do NOT recalculate features inside Research" is now true in code,
+not just policy. `Experiment.feature_contract_version` (captured once
+at creation from `FEATURE_CONTRACT_VERSION`) is requirement 6's
+reproducibility guarantee: a run only evaluates against FeatureRecords
+whose own contract version matches, so a future feature-formula change
+can never silently alter what an old experiment measures — it just
+finds no data until re-run against freshly computed features.
+
+A real end-to-end run against this worktree's own pre-existing database
+(two real experiments, created before this version) surfaced a genuine
+bug pure unit tests never would have: the additive-only ALTER TABLE
+migration pattern this codebase already used for `historical_bars`
+doesn't work when the OLD column (`experiments.condition_json`,
+`experiment_events.condition_value`) is itself `NOT NULL` and current
+code no longer populates it — every new INSERT violated that
+constraint. Fixed with a real table rebuild
+(`db.py::_drop_legacy_not_null_columns()`, SQLite's own documented
+procedure for a constraint change) that runs once per database, after
+a separate data migration losslessly converts every pre-existing
+experiment's old `"{N}m_return"` condition into the equivalent
+`price.return_{N}m` FeatureCondition (a real, deterministic mapping,
+not a guess — confirmed against this worktree's real experiments).
+
+**Files:** `app/features/vocabulary.py` (new), `app/models/research.py`
+(`FeatureCondition`/`FeatureConditionOperator`, `Experiment.conditions`/
+`feature_contract_version`), `app/research/conditions.py`
+(`evaluate_feature_conditions`), `app/research/engine.py`,
+`app/research/metrics.py` (trailing-return math removed, subsumed by
+`app/features/price.py`), `app/storage/db.py` (schema + migration +
+rebuild), `app/storage/research_repository.py`, `app/api/research.py`,
+`app/api/features.py` (`GET /features/vocabulary`),
+`frontend/src/types/{features,research}.ts`,
+`frontend/src/components/research/ConditionBuilder.tsx` (rewritten),
+`ExperimentForm.tsx`/`ExperimentResultsView.tsx`/`ExperimentCompare.tsx`.
+**Tests:** 62 new (`test_feature_vocabulary.py`,
+`test_research_conditions.py`, plus substantial rewrites of
+`test_research_models.py`/`test_research_repository.py`/
+`test_research_engine.py`/`test_research_api.py`/`test_research_metrics.py`)
+— vocabulary loading/lookup, condition validation (between-shape,
+boolean-vs-numeric), multi-condition AND evaluation (including the
+DoD's literal 3-condition example), feature-contract-version
+reproducibility, missing-feature-record handling, and two regression
+tests for the legacy-schema migration bug found live. Full suite: 736
+passed. Verified live end-to-end (not just tests): built the DoD's
+exact 3-condition experiment through the real UI against the real
+backend, ran it, and confirmed a separate trivially-true condition
+finds 228 real signals with correct aggregate statistics.
+
 ## v0.1.23 — Auto-ingest failure escalation + real-data verification (2026-08-17)
 
 Two things, both closing gaps a real end-to-end run (not just tests)

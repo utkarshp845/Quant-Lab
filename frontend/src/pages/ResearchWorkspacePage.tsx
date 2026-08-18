@@ -150,11 +150,12 @@ export function ResearchWorkspacePage() {
       </header>
 
       <div className="research-gap-banner">
-        <strong>Scoped to what the Research Engine supports today:</strong> one symbol, one condition
-        (trailing-return only), one forward-return outcome per experiment. Multi-symbol universes, AND/OR
-        condition groups over any feature, percentile statistics, threshold-probability, and segmentation are shown
-        in this UI where they're part of the workflow but are visibly disabled -- each requires a backend
-        extension not built yet, per this workspace's own "no duplicate backend calculations" rule.
+        <strong>Scoped to what the Research Engine supports today:</strong> one symbol, any number of
+        conditions ANDed together (each referencing a real Feature Engine value -- see the condition builder's
+        dropdown), one forward-return outcome per experiment. Multi-symbol universes, OR/nested condition
+        groups, percentile statistics, threshold-probability, and segmentation are shown in this UI where
+        they're part of the workflow but are visibly disabled -- each requires a backend extension not built
+        yet, per this workspace's own "no duplicate backend calculations" rule.
       </div>
 
       {view === "list" && (

@@ -1,6 +1,6 @@
 import type { BearPutSpreadRequest, BearPutSpreadResponse } from "../types/bearPutSpread";
 import type { CsvImportResponse } from "../types/csvImport";
-import type { FeatureComputeRequest, FeatureComputeResponse, FeatureRecordsResponse } from "../types/features";
+import type { FeatureComputeRequest, FeatureComputeResponse, FeatureDefinition, FeatureRecordsResponse } from "../types/features";
 import type {
   HistoricalBar,
   HistoricalBarsResponse,
@@ -222,6 +222,19 @@ export function getStoredHistoricalBars(params: {
  */
 export function computeFeatures(request: FeatureComputeRequest): Promise<FeatureComputeResponse> {
   return postJson<FeatureComputeResponse>("/features/compute", request);
+}
+
+/**
+ * GET /api/features/vocabulary -- the canonical feature vocabulary
+ * (v0.1.24, app/features/vocabulary.py). Research's condition builder
+ * (src/components/research/ConditionBuilder.tsx) populates its feature
+ * dropdown from this call rather than a hardcoded list -- requirement
+ * 2 of the Feature <-> Research integration. A static, in-process
+ * backend response (no database read) -- safe to fetch once per form
+ * mount.
+ */
+export function getFeatureVocabulary(): Promise<FeatureDefinition[]> {
+  return getJson<FeatureDefinition[]>("/features/vocabulary");
 }
 
 /**

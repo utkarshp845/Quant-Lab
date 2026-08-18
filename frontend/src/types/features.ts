@@ -102,12 +102,38 @@ export interface FeatureRecordsResponse {
   features: FeatureRecord[];
 }
 
+// Types mirroring backend/app/features/vocabulary.py (v0.1.24) -- the
+// canonical feature vocabulary GET /api/features/vocabulary returns.
+// This is what src/components/research/ConditionBuilder.tsx populates
+// its feature dropdown from -- see that file's own docstring for why
+// nothing in this frontend hardcodes the feature list either.
+
+export type FeatureValueType = "numeric" | "boolean";
+
+export type FeatureCategory = "price" | "volume" | "volatility" | "market_context" | "price_position";
+
+export interface FeatureDefinition {
+  feature_id: string; // "{category}.{field}", e.g. "price.return_5m"
+  name: string;
+  category: FeatureCategory;
+  value_type: FeatureValueType;
+  description: string;
+  supported_operators: string[]; // e.g. ["<", "<=", "=", ">=", ">", "between"] for a numeric feature
+  version: string;
+  // True for the 16 SPY/QQQ-derived market_context features -- None
+  // for any symbol not configured for market context at all (see
+  // FeatureRecord.market_context above), not "insufficient history".
+  market_context_only: boolean;
+}
+
 // Every leaf metric name across all 5 categories, used by the
 // (currently backend-unsupported) segmentation UI to label which
 // feature a user picked to bucket by -- see
 // src/components/research/SegmentationPanel.tsx for why this list
 // exists even though segmentation itself isn't wired to a real
-// computation yet.
+// computation yet. NOT the source ConditionBuilder uses (that's
+// FeatureDefinition/GET .../vocabulary above) -- kept here, unchanged,
+// purely for SegmentationPanel's own still-disabled dropdown.
 export const FEATURE_METRIC_LABELS: Record<string, string> = {
   "price.return_5m": "Return (5m)",
   "price.return_15m": "Return (15m)",

@@ -1,37 +1,31 @@
 """Metric calculations for Research v1 (app/research/).
 
-Two metric kinds, both computed as plain returns on the SAME bar series
-an experiment is evaluating -- no separate indicator dataset:
+v0.1.24 (Feature <-> Research integration): this module used to compute
+BOTH condition metrics ("{N}m_return", a trailing return evaluated
+directly on bars) and the outcome metric ("forward_return"). Condition
+evaluation is now feature-based instead (app/research/conditions.py::
+evaluate_feature_conditions(), reading an already-computed FeatureRecord
+-- see app/features/vocabulary.py, and "Do NOT recalculate features
+inside Research" in this integration's own spec) -- trailing_return()
+and parse_trailing_return_metric() were removed rather than left
+unused, since app/features/price.py::trailing_return() is now the one
+place that calculation happens at all.
 
-  - CONDITION metrics: "{N}m_return" (e.g. "30m_return") -- the return
-    from N minutes before an observation to the observation itself,
-    using only bars up to and including that observation. See
-    trailing_return()'s docstring for why that is what makes condition
-    evaluation free of look-ahead by construction.
-  - OUTCOME metrics: "forward_return" -- the return from an observation
-    forward `horizon_minutes`, using bars AFTER the observation.
-    Deliberately look-ahead: measuring what happens next is the whole
-    point of an outcome.
-
-v1 scope note: "{N}m_return" is evaluated as a literal trailing
-bar-count window over the queried bar series -- it is NOT anchored to
-a trading session's open (so a window can span a day boundary if the
-dataset has consecutive bars there). Session-boundary awareness would
-mean the condition model growing beyond "metric/operator/threshold",
-which the spec explicitly rules out for v1 ("do not build a complex
-expression language yet") -- see README's Research v1 limitations list.
+What remains is OUTCOME-only: "forward_return" -- the return from an
+observation forward `horizon_minutes`, using bars AFTER the
+observation. Deliberately look-ahead: measuring what happens next is
+the whole point of an outcome. bars_for_window()/timeframe_minutes()
+are shared by both the outcome's own window math and
+app/api/research.py's request-time validation of `horizon_minutes`
+against the experiment's timeframe.
 """
-
-import re
 
 from app.models.market_data import HistoricalBar
 
 # The normalized timeframe vocabulary this app already uses end to end
 # (see app/api/historical_data.py::ALLOWED_TIMEFRAMES), expressed in
-# minutes so a "{N}m" window can be converted to a bar count.
+# minutes so an "{N} minute" window can be converted to a bar count.
 _TIMEFRAME_MINUTES = {"1m": 1, "5m": 5, "15m": 15, "1h": 60, "1d": 1440}
-
-_TRAILING_RETURN_RE = re.compile(r"^(\d+)m_return$")
 
 FORWARD_RETURN_METRIC = "forward_return"
 
@@ -44,18 +38,6 @@ def timeframe_minutes(timeframe: str) -> int:
     if timeframe not in _TIMEFRAME_MINUTES:
         raise ValueError(f"Unsupported timeframe {timeframe!r}. Allowed: {sorted(_TIMEFRAME_MINUTES)}")
     return _TIMEFRAME_MINUTES[timeframe]
-
-
-def parse_trailing_return_metric(metric: str) -> int:
-    """Returns N (minutes) for a "{N}m_return" condition metric name,
-    raising ValueError for anything else -- the only condition metric
-    v1 supports (see Condition's docstring in app/models/research.py)."""
-    match = _TRAILING_RETURN_RE.match(metric)
-    if not match:
-        raise ValueError(
-            f"Unsupported condition metric {metric!r}. Expected the form '<minutes>m_return', e.g. '30m_return'."
-        )
-    return int(match.group(1))
 
 
 def bars_for_window(minutes: int, timeframe: str) -> int:
@@ -75,30 +57,6 @@ def bars_for_window(minutes: int, timeframe: str) -> int:
             f"{minutes}m window is not a whole number of {timeframe} bars ({minutes} is not a multiple of {tf_minutes})."
         )
     return minutes // tf_minutes
-
-
-def trailing_return(bars: list[HistoricalBar], index: int, window_bars: int) -> float | None:
-    """The condition metric's value AT bars[index]: the return from
-    window_bars bars earlier to bars[index] itself -- using ONLY
-    bars[index - window_bars] through bars[index], never anything past
-    `index`. That is what makes it safe to call at every observation in
-    order without look-ahead: advancing `index` forward one bar at a
-    time never lets a later bar influence an earlier decision.
-
-    Returns None (never 0.0, never an exception) when there are not
-    enough preceding bars to fill the window -- e.g. the first five
-    bars of a 30-minute/5-minute-bar series have no six-bars-back
-    neighbor yet. None means "not an eligible observation", not "the
-    return was zero".
-    """
-    start_index = index - window_bars
-    if start_index < 0:
-        return None
-    base_price = bars[start_index].close
-    if base_price == 0:
-        return None
-    current_price = bars[index].close
-    return (current_price - base_price) / base_price
 
 
 def forward_return(bars: list[HistoricalBar], index: int, window_bars: int) -> tuple[float, HistoricalBar] | None:

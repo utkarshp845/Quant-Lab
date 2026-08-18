@@ -1,7 +1,12 @@
 """API routes for Feature Engine v1:
 
-    POST /features/compute     bars -> engine -> historical_features (persisted)
-    GET  /features/{symbol}    historical_features -> FeatureRecord[]
+    POST /features/compute      bars -> engine -> historical_features (persisted)
+    GET  /features/{symbol}     historical_features -> FeatureRecord[]
+    GET  /features/vocabulary   the canonical feature vocabulary (v0.1.24) -- see
+                                 app/features/vocabulary.py. Research's condition
+                                 builder populates its feature dropdown from this
+                                 route rather than a hardcoded list -- requirement 2
+                                 of the Feature <-> Research integration.
 
 Reads ONLY from app.storage.historical_bar_repository -- the existing
 normalized historical dataset -- never raw/quarantined data, and never
@@ -35,6 +40,7 @@ from fastapi import APIRouter, HTTPException, Query
 
 from app.api.historical_data import ALLOWED_SYMBOLS, ALLOWED_TIMEFRAMES
 from app.features.engine import compute_features
+from app.features.vocabulary import FeatureDefinition, get_feature_vocabulary
 from app.models.features import FeatureComputeRequest, FeatureComputeResponse, FeatureRecordsResponse
 from app.models.market_data import HistoricalBar
 from app.storage import feature_repository, historical_bar_repository
@@ -117,6 +123,18 @@ def compute_and_save_features(request: FeatureComputeRequest) -> FeatureComputeR
         market_context_applied=market_context_applied,
         features=records,
     )
+
+
+@router.get("/features/vocabulary", response_model=list[FeatureDefinition])
+def get_vocabulary() -> list[FeatureDefinition]:
+    """The canonical feature vocabulary (v0.1.24, app/features/
+    vocabulary.py) -- every feature Research's condition builder (or any
+    future consumer) can reference by `feature_id`, with its name, type,
+    description, supported operators, and Feature Engine contract
+    version. A static, in-process list (no database read) -- this
+    route exists so nothing outside app/features/ needs its own copy of
+    which features exist."""
+    return get_feature_vocabulary()
 
 
 @router.get("/features/{symbol}", response_model=FeatureRecordsResponse)

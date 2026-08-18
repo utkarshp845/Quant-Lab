@@ -1,11 +1,11 @@
 import type { Experiment } from "../../types/research";
-import { fmtNumberOrDash, fmtPercentOrDash } from "../../utils/researchFormat";
+import { describeConditions, fmtNumberOrDash, fmtPercentOrDash } from "../../utils/researchFormat";
 
 const ROWS: Array<{ label: string; get: (e: Experiment) => string }> = [
   { label: "Symbol", get: (e) => e.symbol },
   { label: "Date range", get: (e) => `${e.start_date} → ${e.end_date}` },
   { label: "Timeframe / Provider", get: (e) => `${e.timeframe} / ${e.provider}` },
-  { label: "Condition", get: (e) => `${e.condition.metric} ${e.condition.operator} ${(e.condition.threshold * 100).toFixed(2)}%` },
+  { label: "Conditions (AND)", get: (e) => describeConditions(e.conditions) },
   {
     label: "Outcome",
     get: (e) => `forward_return (${e.outcome.horizon_minutes}m) ${e.outcome.operator} ${(e.outcome.threshold * 100).toFixed(2)}%`,

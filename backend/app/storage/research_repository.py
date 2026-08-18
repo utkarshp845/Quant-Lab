@@ -14,11 +14,22 @@ models/research.py) -- never a raw sqlite3.Row past this file's own
 boundary, matching historical_bar_repository.py's own rule.
 """
 
+import json
 from datetime import date, datetime
 from pathlib import Path
 
-from app.models.research import Condition, Experiment, ExperimentEvent, ExperimentResults, ExperimentStatus, Outcome
+from pydantic import TypeAdapter
+
+from app.models.research import Experiment, ExperimentEvent, ExperimentResults, ExperimentStatus, FeatureCondition, Outcome
 from app.storage.db import get_connection
+
+# For (de)serializing `conditions` -- a LIST of FeatureCondition, unlike
+# Outcome (exactly one, so Outcome.model_dump_json()/model_validate_json()
+# is enough on its own). pydantic's TypeAdapter is the documented way to
+# get the same validate/dump behavior for a non-BaseModel type like
+# list[FeatureCondition].
+_ConditionsAdapter = TypeAdapter(list[FeatureCondition])
+_ConditionValuesAdapter = TypeAdapter(dict[str, float | bool])
 
 
 def save_experiment(experiment: Experiment, *, db_path: str | Path | None = None) -> None:
@@ -33,8 +44,9 @@ def save_experiment(experiment: Experiment, *, db_path: str | Path | None = None
                 """
                 INSERT INTO experiments
                     (id, name, hypothesis, symbol, start_date, end_date, timeframe, provider,
-                     condition_json, outcome_json, status, created_at, completed_at, results_json, error_message)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     conditions_json, outcome_json, feature_contract_version, status, created_at,
+                     completed_at, results_json, error_message)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     experiment.id,
@@ -45,8 +57,9 @@ def save_experiment(experiment: Experiment, *, db_path: str | Path | None = None
                     experiment.end_date.isoformat(),
                     experiment.timeframe,
                     experiment.provider,
-                    experiment.condition.model_dump_json(),
+                    _ConditionsAdapter.dump_json(experiment.conditions).decode(),
                     experiment.outcome.model_dump_json(),
+                    experiment.feature_contract_version,
                     experiment.status.value,
                     experiment.created_at.isoformat(),
                     experiment.completed_at.isoformat() if experiment.completed_at else None,
@@ -150,7 +163,7 @@ def replace_events(experiment_id: str, events: list[ExperimentEvent], *, db_path
                 conn.execute(
                     """
                     INSERT INTO experiment_events
-                        (experiment_id, symbol, signal_timestamp, signal_price, condition_value,
+                        (experiment_id, symbol, signal_timestamp, signal_price, condition_values_json,
                          outcome_timestamp, outcome_price, outcome_value, success)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
@@ -159,7 +172,7 @@ def replace_events(experiment_id: str, events: list[ExperimentEvent], *, db_path
                         event.symbol,
                         event.signal_timestamp.isoformat(),
                         event.signal_price,
-                        event.condition_value,
+                        json.dumps(event.condition_values),
                         event.outcome_timestamp.isoformat(),
                         event.outcome_price,
                         event.outcome_value,
@@ -195,8 +208,9 @@ def _row_to_experiment(row) -> Experiment:
         end_date=date.fromisoformat(row["end_date"]),
         timeframe=row["timeframe"],
         provider=row["provider"],
-        condition=Condition.model_validate_json(row["condition_json"]),
+        conditions=_ConditionsAdapter.validate_json(row["conditions_json"]),
         outcome=Outcome.model_validate_json(row["outcome_json"]),
+        feature_contract_version=row["feature_contract_version"],
         status=ExperimentStatus(row["status"]),
         created_at=datetime.fromisoformat(row["created_at"]),
         completed_at=datetime.fromisoformat(row["completed_at"]) if row["completed_at"] else None,
@@ -206,12 +220,19 @@ def _row_to_experiment(row) -> Experiment:
 
 
 def _row_to_event(row) -> ExperimentEvent:
+    # `condition_values_json` is NULL only for an event row saved before
+    # v0.1.24 that hasn't been through a re-run since -- see the schema
+    # comment on experiment_events (app/storage/db.py) for why that's
+    # not individually data-migrated. Falling back to {} keeps this a
+    # read, not a crash; re-running the experiment (POST .../run)
+    # repopulates it correctly.
+    condition_values = _ConditionValuesAdapter.validate_json(row["condition_values_json"]) if row["condition_values_json"] else {}
     return ExperimentEvent(
         experiment_id=row["experiment_id"],
         symbol=row["symbol"],
         signal_timestamp=datetime.fromisoformat(row["signal_timestamp"]),
         signal_price=row["signal_price"],
-        condition_value=row["condition_value"],
+        condition_values=condition_values,
         outcome_timestamp=datetime.fromisoformat(row["outcome_timestamp"]),
         outcome_price=row["outcome_price"],
         outcome_value=row["outcome_value"],
