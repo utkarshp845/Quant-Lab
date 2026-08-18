@@ -9,7 +9,13 @@ table added v0.1.29; Experiment Freeze & Provenance v1's
 experiment_freeze_snapshots table, and experiments' lifecycle_state/
 oos_partition_id/hypothesis_hash/frozen_at/archived_at columns, added
 v0.1.30; OOS Evaluation v1's oos_evaluations/oos_evaluation_signals
-tables added v0.1.31).
+tables added v0.1.31; OOS Evidence Accumulation V1's
+experiment_oos_periods table added v0.1.33 -- purely additive, no
+ALTER TABLE needed anywhere else, since it only LINKS already-existing
+experiments/oos_partitions rows rather than adding columns to either;
+OOS Statistical Review V1's oos_statistical_reviews table added
+v0.1.34 -- also purely additive, since it only WRITES new, immutable
+review rows and reads every other table).
 
 Why SQLite, specifically: this is a local, single-user, no-auth
 educational tool (see README section 1) -- a server-based RDBMS
@@ -537,6 +543,81 @@ CREATE TABLE IF NOT EXISTS oos_evaluation_signals (
 );
 CREATE INDEX IF NOT EXISTS idx_oos_evaluation_signals_evaluation
     ON oos_evaluation_signals (evaluation_id, signal_timestamp);
+
+-- OOS Evidence Accumulation V1 (app/models/oos_evidence.py,
+-- app/oos_evidence/, app/storage/oos_evidence_repository.py,
+-- app/api/oos_evidence.py): one row per (experiment_id,
+-- oos_partition_id) LINK -- "this already-existing, independently
+-- created OOSPartition (still created the normal way, via the
+-- existing, UNMODIFIED oos_partitions table above) is registered as an
+-- additional OOS evaluation period for this already-frozen
+-- experiment". No OHLCV data, no partition boundary, and no experiment
+-- field is duplicated onto this table beyond what a reader needs to
+-- see what a period covers without a join -- symbol/timeframe/
+-- provider/oos_start/oos_end (== the referenced partition's own
+-- holdout_start/holdout_end) are copied here at registration time,
+-- the identical "self-describing row" convention oos_evaluations'
+-- own comment above already applies. PRIMARY KEY is the pair itself
+-- (never a separate autoincrement id): a partition may be registered
+-- for more than one experiment in principle, but never twice for the
+-- SAME experiment -- app/oos_evidence/period.py::validate_new_period()
+-- is what actually enforces every leakage/overlap rule BEFORE a row
+-- is ever written here; this table only records the outcome of an
+-- already-validated registration. Every column is set once, at
+-- registration, and never updated -- there is no edit endpoint, the
+-- same "no mutation after creation" rule this app applies everywhere
+-- else a definition, rather than a run's status, is being recorded.
+CREATE TABLE IF NOT EXISTS experiment_oos_periods (
+    experiment_id TEXT NOT NULL,
+    oos_partition_id TEXT NOT NULL,
+    symbol TEXT NOT NULL,
+    timeframe TEXT NOT NULL,
+    provider TEXT NOT NULL,
+    oos_start TEXT NOT NULL,
+    oos_end TEXT NOT NULL,
+    label TEXT,
+    registered_at TEXT NOT NULL,
+    PRIMARY KEY (experiment_id, oos_partition_id)
+);
+CREATE INDEX IF NOT EXISTS idx_experiment_oos_periods_experiment
+    ON experiment_oos_periods (experiment_id, oos_start);
+
+-- OOS Statistical Review V1 (app/models/oos_statistical_review.py,
+-- app/oos_statistical_review/, app/storage/
+-- oos_statistical_review_repository.py, app/api/
+-- oos_statistical_review.py): one row per REVIEW RUN -- a formal,
+-- read-only statistical review of a frozen experiment's own
+-- accumulated OOS evidence (oos_evaluations above, both the originally
+-- frozen-time-linked partition's own evaluation(s) and every OOS
+-- Evidence Accumulation V1 period's own evaluation(s)). `id` is a
+-- random id (like `oos_evaluations.id`, NOT a deterministic hash like
+-- `oos_partitions.id`) precisely because running the SAME review again
+-- against the SAME evidence must produce a NEW row with IDENTICAL
+-- analytical content, never overwriting a prior review -- this table
+-- is APPEND-ONLY: there is no UPDATE, no REPLACE, and no DELETE
+-- anywhere in app/storage/oos_statistical_review_repository.py.
+-- `review_json` holds the entire OOSStatisticalReview (every input,
+-- every config value, every computed statistic, the verdict, and the
+-- reasoning) as one JSON blob -- see that repository module's own
+-- comment for why (a complex, nested shape nothing else in this app
+-- needs to query into a sub-field of); `experiment_id`/
+-- `hypothesis_hash`/`verdict`/`created_at` are pulled out as their own
+-- columns because those are the four things a caller actually filters/
+-- orders on. This feature never writes to any OTHER table -- no
+-- `experiments`, `experiment_freeze_snapshots`, `oos_partitions`,
+-- `oos_evaluations`, `oos_evaluation_signals`, `historical_bars`, or
+-- `historical_features` row is ever touched by anything in
+-- app/oos_statistical_review/ or app/api/oos_statistical_review.py.
+CREATE TABLE IF NOT EXISTS oos_statistical_reviews (
+    id TEXT PRIMARY KEY,
+    experiment_id TEXT NOT NULL,
+    hypothesis_hash TEXT NOT NULL,
+    verdict TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    review_json TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_oos_statistical_reviews_experiment
+    ON oos_statistical_reviews (experiment_id, created_at);
 """
 
 # v0.1.18: columns added to an already-shipped table, so CREATE TABLE IF
