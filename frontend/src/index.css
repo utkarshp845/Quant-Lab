@@ -1928,6 +1928,42 @@ body {
   padding: 5px 10px !important;
 }
 
+/* v0.1.24 (Feature <-> Research integration): multi-condition AND list
+   in ConditionBuilder, and the read-only condition list in
+   ExperimentResultsView. */
+.condition-row-group {
+  margin-bottom: 8px;
+}
+
+.condition-and-divider {
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: var(--color-text-muted);
+  margin: 6px 0;
+}
+
+.condition-remove-btn {
+  background: none;
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  width: 24px;
+  height: 24px;
+  line-height: 1;
+  padding: 0 !important;
+  font-size: 0.8rem !important;
+  color: var(--color-text-muted);
+}
+
+.research-condition-list {
+  margin: 4px 0 0;
+  padding-left: 18px;
+}
+
+.research-condition-list li {
+  margin-bottom: 2px;
+}
+
 .research-warnings {
   display: flex;
   flex-direction: column;

@@ -1,6 +1,6 @@
 import { useMemo } from "react";
 import type { ExperimentEvent, Experiment } from "../../types/research";
-import { fmtNumberOrDash, fmtPercentOrDash } from "../../utils/researchFormat";
+import { describeFeatureCondition, fmtNumberOrDash, fmtPercentOrDash } from "../../utils/researchFormat";
 import { ResearchDistributionChart } from "./ResearchDistributionChart";
 import { conditionCountWarnings, dateRangeWarnings, multipleTestingWarning, sampleSizeWarnings } from "./researchWarnings";
 import { SegmentationPanel } from "./SegmentationPanel";
@@ -26,7 +26,10 @@ export function ExperimentResultsView({
   sameSymbolExperimentCount: number;
 }) {
   const warnings = useMemo(() => {
-    const list = [...dateRangeWarnings(experiment.start_date, experiment.end_date), ...conditionCountWarnings(1)];
+    const list = [
+      ...dateRangeWarnings(experiment.start_date, experiment.end_date),
+      ...conditionCountWarnings(experiment.conditions.length),
+    ];
     if (experiment.results) list.push(...sampleSizeWarnings(experiment.results.total_events));
     list.push(...multipleTestingWarning(sameSymbolExperimentCount));
     return list;
@@ -85,10 +88,15 @@ export function ExperimentResultsView({
 
       {/* ---- Conditions & outcome ---- */}
       <section className="section research-block">
-        <h2 className="section-title">Conditions</h2>
-        <p>
-          <code>{experiment.condition.metric}</code> {experiment.condition.operator} {(experiment.condition.threshold * 100).toFixed(2)}%
-        </p>
+        <h2 className="section-title">Conditions (AND)</h2>
+        <ul className="research-condition-list">
+          {experiment.conditions.map((condition, i) => (
+            <li key={i}>
+              <code>{describeFeatureCondition(condition)}</code>
+            </li>
+          ))}
+        </ul>
+        <p className="condition-metric-preview">Feature Engine contract version: <code>{experiment.feature_contract_version}</code></p>
         <h2 className="section-title research-outcome-heading">Outcome</h2>
         <p>
           <code>forward_return</code> ({experiment.outcome.horizon_minutes}m) {experiment.outcome.operator}{" "}

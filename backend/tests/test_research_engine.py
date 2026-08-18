@@ -1,13 +1,23 @@
 """Tests for app/research/engine.py::run_experiment() -- the pure
-condition -> signal -> outcome -> aggregate pipeline, against synthetic,
+conditions -> signal -> outcome -> aggregate pipeline, against synthetic,
 deterministic HistoricalBar data (never live market data, per this
 feature's spec section 9). No database, no HTTP, no provider involved
 anywhere in this file.
 
-Fixture shape, used throughout: 5-minute bars, a "5m_return <= -1%"
-condition (window = 1 bar -- a single bar-to-bar step) and a
-"forward_return, 15m horizon, <= -0.5%" outcome (window = 3 bars).
-A 1-bar condition window is deliberate here (as opposed to the spec
+v0.1.24 (Feature <-> Research integration): condition evaluation reads
+an already-computed FeatureRecord instead of recomputing a trailing
+return directly off bars -- feature_records here are built via the
+REAL Feature Engine (app.features.engine.compute_features(), the same
+function app/api/features.py calls), never a hand-rolled stand-in, so
+these tests exercise the actual "Do NOT recalculate features inside
+Research" boundary rather than assuming it.
+
+Fixture shape, carried over from before this integration: 5-minute
+bars, a "return_5m <= -1%" condition (app/features/price.py's
+return_5m, a 1-bar trailing window on 5-minute bars -- mathematically
+identical to the old bar-based "5m_return" this replaced) and a
+"forward_return, 15m horizon, <= -0.5%" outcome (window = 3 bars). A
+1-bar condition window is deliberate here (as opposed to the spec
 example's 30-minute window, exercised end to end in
 tests/test_research_api.py::TestExampleExperiment instead): it makes
 every value in the fixture hand-computable from its two immediate
@@ -32,12 +42,14 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
+from app.features.engine import compute_features
+from app.models.features import FEATURE_CONTRACT_VERSION, FeatureRecord
 from app.models.market_data import HistoricalBar
-from app.models.research import Condition, ConditionOperator, Outcome
+from app.models.research import FeatureCondition, FeatureConditionOperator, Outcome
 from app.research.engine import run_experiment
 
-_CONDITION = Condition(metric="5m_return", operator=ConditionOperator.LTE, threshold=-0.01)
-_OUTCOME = Outcome(metric="forward_return", horizon_minutes=15, operator=ConditionOperator.LTE, threshold=-0.005)
+_CONDITIONS = [FeatureCondition(feature_id="price.return_5m", operator=FeatureConditionOperator.LTE, value=-0.01)]
+_OUTCOME = Outcome(metric="forward_return", horizon_minutes=15, operator="<=", threshold=-0.005)
 
 # One value per 5-minute bar, index 0..13. See the module docstring for
 # how this was constructed: two flat bars (so the 1-bar condition
@@ -69,8 +81,9 @@ _SIGNAL_B_INDEX = 8
 _SIGNAL_B_OUTCOME_INDEX = 11
 
 
-def _bars(closes: list[float] = _CLOSES, *, timeframe="5m") -> list[HistoricalBar]:
+def _bars(closes: list[float] = _CLOSES, *, timeframe="5m", volumes: list[int] | None = None) -> list[HistoricalBar]:
     base = datetime(2026, 8, 10, 13, 30, tzinfo=timezone.utc)
+    volumes = volumes or [1_000] * len(closes)
     return [
         HistoricalBar(
             symbol="TSLA",
@@ -79,7 +92,7 @@ def _bars(closes: list[float] = _CLOSES, *, timeframe="5m") -> list[HistoricalBa
             high=close,
             low=close,
             close=close,
-            volume=1_000,
+            volume=volumes[i],
             provider="csv",
             timeframe=timeframe,
         )
@@ -87,14 +100,29 @@ def _bars(closes: list[float] = _CLOSES, *, timeframe="5m") -> list[HistoricalBa
     ]
 
 
-def _run(bars=None, condition=_CONDITION, outcome=_OUTCOME, timeframe="5m"):
+def _features(bars: list[HistoricalBar], *, timeframe="5m", feature_contract_version: str = FEATURE_CONTRACT_VERSION) -> list[FeatureRecord]:
+    """Real Feature Engine output for `bars` -- see the module docstring
+    for why this is never a hand-rolled stand-in. `feature_contract_version`
+    is overridable only for the version-mismatch tests below; every
+    other test uses the real, current contract version."""
+    records = compute_features(symbol="TSLA", timeframe=timeframe, provider="csv", bars=bars, calculated_at=datetime.now(timezone.utc))
+    if feature_contract_version != FEATURE_CONTRACT_VERSION:
+        records = [r.model_copy(update={"feature_contract_version": feature_contract_version}) for r in records]
+    return records
+
+
+def _run(bars=None, conditions=_CONDITIONS, outcome=_OUTCOME, timeframe="5m", feature_records=None, feature_contract_version=FEATURE_CONTRACT_VERSION):
+    bars = bars if bars is not None else _bars()
+    feature_records = feature_records if feature_records is not None else _features(bars, timeframe=timeframe)
     return run_experiment(
         experiment_id="exp-1",
         symbol="TSLA",
         timeframe=timeframe,
-        condition=condition,
+        conditions=conditions,
         outcome=outcome,
-        bars=bars if bars is not None else _bars(),
+        bars=bars,
+        feature_records=feature_records,
+        feature_contract_version=feature_contract_version,
     )
 
 
@@ -143,7 +171,7 @@ class TestSignalEventCreation:
         assert signal_a.symbol == "TSLA"
         assert signal_a.signal_timestamp == bars[_SIGNAL_A_INDEX].timestamp
         assert signal_a.signal_price == bars[_SIGNAL_A_INDEX].close
-        assert signal_a.condition_value == pytest.approx(-0.02)
+        assert signal_a.condition_values == {"price.return_5m": pytest.approx(-0.02)}
 
 
 class TestOutcomeCalculation:
@@ -269,7 +297,7 @@ class TestNoLookAheadBehavior:
         original_signal_a = original_events[0]
         perturbed_signal_a = perturbed_events[0]
 
-        assert original_signal_a.condition_value == perturbed_signal_a.condition_value
+        assert original_signal_a.condition_values == perturbed_signal_a.condition_values
         assert original_signal_a.signal_price == perturbed_signal_a.signal_price
         assert original_signal_a.outcome_value == perturbed_signal_a.outcome_value
         assert original_signal_a.outcome_price == perturbed_signal_a.outcome_price
@@ -295,19 +323,123 @@ class TestReproducibility:
 
     def test_repeated_calls_are_side_effect_free(self):
         """run_experiment() is pure -- calling it three times against
-        the exact same arguments (including the same list object) must
-        not mutate `bars` or accumulate state anywhere."""
+        the exact same arguments (including the same list objects) must
+        not mutate `bars`/`feature_records` or accumulate state
+        anywhere."""
         bars = _bars()
+        feature_records = _features(bars)
         bars_snapshot = list(bars)
+        features_snapshot = list(feature_records)
 
         for _ in range(3):
             run_experiment(
                 experiment_id="exp-1",
                 symbol="TSLA",
                 timeframe="5m",
-                condition=_CONDITION,
+                conditions=_CONDITIONS,
                 outcome=_OUTCOME,
                 bars=bars,
+                feature_records=feature_records,
+                feature_contract_version=FEATURE_CONTRACT_VERSION,
             )
 
         assert bars == bars_snapshot
+        assert feature_records == features_snapshot
+
+
+class TestMultipleAndedConditions:
+    """v0.1.24: an Experiment can have more than one FeatureCondition,
+    ANDed. Uses a second, independently-verifiable feature
+    (volume.volume_acceleration -- current bar volume / previous bar
+    volume) alongside the same price.return_5m condition the rest of
+    this file uses."""
+
+    def test_an_additional_true_condition_does_not_remove_the_built_in_signals(self):
+        """Every bar in _bars() has constant volume (1_000), so
+        volume_acceleration is always exactly 1.0 wherever it's
+        defined -- an always-true second condition (>= 1.0) must not
+        change which signals fire."""
+        conditions = [
+            *_CONDITIONS,
+            FeatureCondition(feature_id="volume.volume_acceleration", operator=FeatureConditionOperator.GTE, value=1.0),
+        ]
+
+        events, _ = _run(conditions=conditions)
+
+        assert len(events) == 2
+        assert events[0].condition_values == {
+            "price.return_5m": pytest.approx(-0.02),
+            "volume.volume_acceleration": pytest.approx(1.0),
+        }
+
+    def test_an_additional_false_condition_suppresses_every_signal(self):
+        """volume_acceleration is never > 1.0 on this constant-volume
+        fixture -- ANDing that in must eliminate both signals, proving
+        the AND is a genuine AND, not an OR or a first-condition-wins."""
+        conditions = [
+            *_CONDITIONS,
+            FeatureCondition(feature_id="volume.volume_acceleration", operator=FeatureConditionOperator.GT, value=1.0),
+        ]
+
+        events, results = _run(conditions=conditions)
+
+        assert events == []
+        assert results.total_events == 0
+
+    def test_a_between_condition_on_a_second_feature_narrows_the_signals(self):
+        """Custom bars where signal A's volume_acceleration lands
+        inside [1.5, 2.5] and signal B's does not -- proves "between"
+        genuinely filters using both bounds, not just one."""
+        volumes = list([1_000] * len(_CLOSES))
+        volumes[_SIGNAL_A_INDEX] = 2_000  # acceleration at index 2: 2000/1000 = 2.0 -- inside [1.5, 2.5]
+        volumes[_SIGNAL_B_INDEX] = 5_000  # acceleration at index 8: 5000/1000 = 5.0 -- outside [1.5, 2.5]
+        bars = _bars(volumes=volumes)
+        conditions = [
+            *_CONDITIONS,
+            FeatureCondition(feature_id="volume.volume_acceleration", operator=FeatureConditionOperator.BETWEEN, value=1.5, value_max=2.5),
+        ]
+
+        events, _ = _run(bars=bars, conditions=conditions)
+
+        assert len(events) == 1
+        assert events[0].signal_timestamp == bars[_SIGNAL_A_INDEX].timestamp
+
+
+class TestFeatureContractVersionReproducibility:
+    """Requirement 6: a FeatureRecord computed under a DIFFERENT
+    feature_contract_version than the experiment's own stored version
+    must never silently feed a condition -- it's treated the same as a
+    missing feature record entirely."""
+
+    def test_a_feature_record_under_a_different_contract_version_is_ignored(self):
+        bars = _bars()
+        mismatched_features = _features(bars, feature_contract_version="v2-not-yet-real")
+
+        events, results = _run(bars=bars, feature_records=mismatched_features, feature_contract_version=FEATURE_CONTRACT_VERSION)
+
+        assert events == []
+        assert results.total_events == 0
+
+    def test_matching_the_experiments_own_version_explicitly_still_works(self):
+        bars = _bars()
+        features = _features(bars, feature_contract_version="v2-not-yet-real")
+
+        events, _ = _run(bars=bars, feature_records=features, feature_contract_version="v2-not-yet-real")
+
+        assert len(events) == 2  # the same two built-in signals, evaluated under the "v2" label instead
+
+
+class TestMissingFeatureRecord:
+    def test_a_bar_with_no_matching_feature_record_produces_no_signal(self):
+        """A bar whose timestamp has no corresponding FeatureRecord at
+        all (e.g. features were computed for an older/narrower range
+        than bars were fetched for) must be skipped, not crash or
+        silently treat a missing record as "no condition"."""
+        bars = _bars()
+        features = _features(bars)
+        features_missing_signal_a = [f for f in features if f.timestamp != bars[_SIGNAL_A_INDEX].timestamp]
+
+        events, _ = _run(bars=bars, feature_records=features_missing_signal_a)
+
+        assert len(events) == 1
+        assert events[0].signal_timestamp == bars[_SIGNAL_B_INDEX].timestamp

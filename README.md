@@ -39,17 +39,21 @@ separate raw-ingestion audit table). An opt-in background loop can keep
 pulling bars on a schedule instead of a manual "Save to Database" click.
 See [9](#9-historical-market-data-pipeline)/[12](#12-historical-bar-storage).
 
-**Research v1** — define a falsifiable condition/outcome hypothesis
-(e.g. "TSLA down ≥1% in 30m → down another ≥0.5% in the next 60m"), run
-it against the stored historical dataset, and get back every individual
+**Research v1** — define a falsifiable hypothesis as one or more
+FeatureConditions (ANDed, each referencing a real Feature Engine value
+— e.g. "VWAP distance > 0 AND volatility percentile between 0.5 and 0.7
+AND relative volume > 1.5") and a forward-return outcome, run it
+against already-computed feature data, and get back every individual
 qualifying signal plus aggregate statistics. Deterministic, reproducible,
 never modifies historical data. Not backtesting, not ML. See
 [15. Research v1](#15-research-v1).
 
 **Feature Engine v1** — transforms normalized bars into a fixed set of
-timestamped PRICE/VOLUME/VOLATILITY/MARKET CONTEXT/PRICE POSITION values,
-persisted for Research (or any future consumer) to read rather than
-recompute. See [16. Feature Engine v1](#16-feature-engine-v1).
+timestamped PRICE/VOLUME/VOLATILITY/MARKET CONTEXT/PRICE POSITION values
+(31 leaf features total), persisted for Research (or any future
+consumer) to read rather than recompute, and exposed as a canonical
+vocabulary Research's condition builder populates itself from. See
+[16. Feature Engine v1](#16-feature-engine-v1).
 
 ## 2. Install and run
 
@@ -75,7 +79,7 @@ in the gitignored `.dev/`). Backend: `http://localhost:8000` (Swagger UI
 at `/docs`). Frontend: `http://localhost:5173`, expects the backend at
 `:8000` (`frontend/src/api/client.ts`).
 
-Backend tests: `cd backend && ./venv/bin/pytest` — 672+ tests, all
+Backend tests: `cd backend && ./venv/bin/pytest` — 736+ tests, all
 against synthetic/mocked data, no live network calls or real credentials
 required.
 
@@ -176,8 +180,9 @@ an in-file long/short scanner, a swappable live/historical market-data
 provider layer (Alpaca/Massive/Schwab/CSV), real-time streaming quotes,
 historical-bar fetch/validate/quarantine/store/raw-audit, an opt-in
 unattended ingestion loop, a deep-range historical backfill script,
-Research v1 (hypothesis testing), and Feature Engine v1 (deterministic
-feature computation).
+Research v1 (hypothesis testing over feature-based, AND-combined
+conditions) integrated with Feature Engine v1 (deterministic feature
+computation exposed as a canonical vocabulary).
 
 **Not implemented, deliberately:** machine learning, authentication/user
 accounts, portfolio management, historical **options** data (equity bars
@@ -362,7 +367,7 @@ consumers built on top of it.
 
 ## 13. Testing
 
-`cd backend && ./venv/bin/pytest` — 672+ deterministic tests, all against
+`cd backend && ./venv/bin/pytest` — 736+ deterministic tests, all against
 synthetic fixtures or mocked HTTP, no live provider credentials or
 network access required anywhere in the suite. Manual, opt-in scripts
 that DO hit real provider APIs with your own credentials
@@ -405,22 +410,36 @@ chronological record; this README describes current behavior only.
 
 ## 15. Research v1
 
-A hypothesis-testing engine on top of `historical_bars`: define a
-`Condition` (`metric`/`operator`/`threshold` — v1 supports one metric
-shape, `"{N}m_return"`, and five operators `< <= == >= >`) and an
+A hypothesis-testing engine on top of already-computed Feature Engine
+data: define one or more `FeatureCondition`s (`feature_id`/`operator`/
+`value(/value_max)`, AND-combined — `feature_id` references an entry in
+[16](#16-feature-engine-v1)'s vocabulary; operators are `< <= = >= >
+between` for a numeric feature, `=` only for a boolean one) and an
 `Outcome` (`"forward_return"`, `horizon_minutes`, `operator`,
-`threshold`) as an `Experiment`, run it, and get back every individual
-qualifying `ExperimentEvent` plus aggregate `ExperimentResults`
-(success rate, average/median/min/max/std-dev of the outcome — `None`,
-never a fabricated `0.0`, when there isn't enough data).
+`threshold` — unchanged, still evaluated against raw bars, since
+measuring "what happened after the signal" was never a Feature Engine
+concern) as an `Experiment`, run it, and get back every individual
+qualifying `ExperimentEvent` (with every fired condition's own observed
+value, `condition_values`) plus aggregate `ExperimentResults` (success
+rate, average/median/min/max/std-dev of the outcome — `None`, never a
+fabricated `0.0`, when there isn't enough data).
 
 ```
-normalized historical_bars -> app/research/engine.py::run_experiment() -> ExperimentEvent[] + ExperimentResults
+historical_features (already computed, [16]) -> app/research/engine.py::run_experiment() -> ExperimentEvent[] + ExperimentResults
+                                                          ^
+                                            historical_bars (signal price + forward_return only)
 ```
 
-The engine (`app/research/`) is pure computation, no I/O: it walks the
-bar series once, forward, and the condition at each bar only ever reads
-bars up to and including that bar — the entire no-look-ahead guarantee.
+The engine (`app/research/`) is pure computation, no I/O, and never
+calls `app/features/engine.py` — "do not recalculate features inside
+Research" is a hard boundary: it reads only already-persisted
+`FeatureRecord`s (matched to each bar by exact timestamp), never
+recomputes one. `Experiment.feature_contract_version` (captured once at
+creation) is the reproducibility guarantee: a run only evaluates
+against FeatureRecords whose own contract version matches, so a future
+feature-formula change can never silently alter what an already-created
+experiment measures — bumping the Feature Engine's contract just makes
+old experiments find no data until duplicated against the new one.
 Re-running an experiment (`POST /research/experiments/{id}/run`) deletes
 and re-inserts its events rather than appending, so results stay
 reproducible against an unchanged dataset. Routes:
@@ -428,14 +447,17 @@ reproducible against an unchanged dataset. Routes:
 (list), `GET .../{id}` (retrieve), `GET .../{id}/events` (every
 individual signal, not just the aggregate), `POST .../{id}/run`.
 
-**Not implemented, on purpose:** any condition/outcome shape beyond the
-two above, simulated P&L/position/capital (backtesting), ML/parameter
-optimization, paper trading, multi-symbol or multi-condition experiments.
+**Not implemented, on purpose:** OR/nested condition groups (AND only),
+simulated P&L/position/capital (backtesting), ML/parameter optimization,
+paper trading, multi-symbol experiments.
 
-**Tests:** `tests/test_research_*.py` (88 tests) — condition/outcome
-math, event creation, success/failure classification, aggregate stats
-(incl. explicit zero/one-observation handling), no-look-ahead,
-date-range/symbol filtering, persistence, and reproducibility.
+**Tests:** `tests/test_research_*.py` + `tests/test_feature_vocabulary.py`
+(150+ tests) — vocabulary loading/lookup, condition validation
+(between-shape, boolean-vs-numeric operators), multi-condition AND
+evaluation, feature-contract-version reproducibility, event creation,
+success/failure classification, aggregate stats (incl. explicit
+zero/one-observation handling), no-look-ahead, date-range/symbol
+filtering, persistence, and reproducibility.
 
 ## 16. Feature Engine v1
 
@@ -472,7 +494,12 @@ normalized historical_bars (+ SPY/QQQ, for eligible symbols)
 ```
 
 Routes: `POST /features/compute` (fetch, compute, persist),
-`GET /features/{symbol}` (read back).
+`GET /features/{symbol}` (read back), `GET /features/vocabulary`
+(v0.1.24 — every leaf feature above as a `FeatureDefinition`: stable
+`feature_id` in `{category}.{field}` form, name, type, description,
+supported operators, contract version — the canonical list
+[15](#15-research-v1)'s condition builder populates itself from,
+`app/features/vocabulary.py`).
 
 **Not implemented, on purpose:** any feature beyond the fixed list
 above, per-symbol trading calendars (annualization is applied uniformly

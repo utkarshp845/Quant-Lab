@@ -2,7 +2,8 @@
 validation metadata + quarantine table added v0.1.18; raw-ingestion
 table added v0.1.19; Research v1's experiments/experiment_events tables
 added v0.1.20; Feature Engine v1's historical_features table added
-v0.1.21).
+v0.1.21; experiments/experiment_events reshaped for feature-based
+conditions, v0.1.24).
 
 Why SQLite, specifically: this is a local, single-user, no-auth
 educational tool (see README section 1) -- a server-based RDBMS
@@ -28,10 +29,13 @@ cost to amortize for this app's traffic (a single human, clicking
 buttons).
 """
 
+import json
+import re
 import sqlite3
 from pathlib import Path
 
 from app import config
+from app.models.features import FEATURE_CONTRACT_VERSION
 
 # provider+symbol+timeframe+timestamp is the natural identity of a bar
 # (see the storage layer's design discussion): the same OHLCV values
@@ -127,17 +131,34 @@ CREATE INDEX IF NOT EXISTS idx_raw_ingestions_lookup
 -- Research v1 (app/research/, app/api/research.py, app/storage/
 -- research_repository.py): one row per EXPERIMENT -- see
 -- experiment_events below for the individual per-signal observations.
--- condition_json/outcome_json hold Condition/Outcome (app/models/
--- research.py) as opaque JSON, the same "structured data as JSON text
--- alongside named columns for whatever IS queried directly" pattern
--- raw_ingestions' own `metadata` column already uses above -- there is
--- exactly one Condition and one Outcome per experiment in v1, so a
--- second normalized table for either would be pure overhead with no
--- query this app actually needs. Every column here except
+-- conditions_json/outcome_json hold list[FeatureCondition]/Outcome
+-- (app/models/research.py) as opaque JSON, the same "structured data
+-- as JSON text alongside named columns for whatever IS queried
+-- directly" pattern raw_ingestions' own `metadata` column already uses
+-- above -- there is exactly one Outcome per experiment, and the
+-- ANDed conditions list has no fixed size, so a second normalized
+-- table for either would be pure overhead with no query this app
+-- actually needs. Every column here except
 -- status/completed_at/results_json/error_message is set once, at
 -- creation, and never updated again -- see Experiment's own docstring
 -- for why that is the entire reproducibility guarantee: re-running an
 -- experiment can never change what it was asked to measure.
+--
+-- v0.1.24 (Feature <-> Research integration): condition_json (a single
+-- Condition: metric/operator/threshold) became conditions_json (a JSON
+-- LIST of FeatureCondition: feature_id/operator/value), and
+-- feature_contract_version was added -- requirement 6's reproducibility
+-- guarantee (see Experiment's own docstring: a run only evaluates
+-- against FeatureRecords whose OWN feature_contract_version matches
+-- this stored value). The old condition_json column is left in place,
+-- unused by any code path after this version, rather than dropped --
+-- same "additive-only migration, never drop a column" precedent
+-- _HISTORICAL_BARS_MIGRATIONS below already established; see
+-- _migrate_legacy_experiment_conditions() for how an EXISTING
+-- database's old-shape rows are converted forward automatically
+-- (every pre-v0.1.24 Condition was always a "{N}m_return" trailing
+-- return, which maps losslessly onto the new "price.return_{N}m"
+-- feature_id -- not a guess).
 CREATE TABLE IF NOT EXISTS experiments (
     id TEXT PRIMARY KEY,
     name TEXT NOT NULL,
@@ -147,8 +168,9 @@ CREATE TABLE IF NOT EXISTS experiments (
     end_date TEXT NOT NULL,
     timeframe TEXT NOT NULL,
     provider TEXT NOT NULL,
-    condition_json TEXT NOT NULL,
+    conditions_json TEXT NOT NULL,
     outcome_json TEXT NOT NULL,
+    feature_contract_version TEXT NOT NULL,
     status TEXT NOT NULL,
     created_at TEXT NOT NULL,
     completed_at TEXT,
@@ -172,13 +194,25 @@ CREATE TABLE IF NOT EXISTS experiments (
 -- time it executes, so keeping only the latest run's events is what
 -- makes "re-run and get the same result" a meaningful, checkable
 -- property instead of an ever-growing pile of duplicates.
+-- v0.1.24: condition_value (a single REAL) became condition_values_json
+-- (a JSON object, feature_id -> observed value -- see ExperimentEvent's
+-- own docstring for why one number was no longer enough once an
+-- experiment can have more than one ANDed condition). The old
+-- condition_value column is left in place, unused, same reasoning as
+-- experiments.condition_json above. An EXISTING database's old rows
+-- are NOT individually converted (unlike experiments.conditions_json):
+-- replace_events() deletes and re-inserts every one of an experiment's
+-- events on every run, so simply re-running an experiment (POST
+-- .../run) is what repopulates condition_values_json correctly -- see
+-- research_repository._row_to_event()'s NULL-safe fallback for a row
+-- that hasn't been re-run since this version shipped.
 CREATE TABLE IF NOT EXISTS experiment_events (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     experiment_id TEXT NOT NULL,
     symbol TEXT NOT NULL,
     signal_timestamp TEXT NOT NULL,
     signal_price REAL NOT NULL,
-    condition_value REAL NOT NULL,
+    condition_values_json TEXT NOT NULL,
     outcome_timestamp TEXT NOT NULL,
     outcome_price REAL NOT NULL,
     outcome_value REAL NOT NULL,
@@ -285,12 +319,182 @@ _HISTORICAL_BARS_MIGRATIONS: list[tuple[str, str]] = [
     ("validation_warnings", "ALTER TABLE historical_bars ADD COLUMN validation_warnings TEXT NOT NULL DEFAULT '[]'"),
 ]
 
+# v0.1.24 (Feature <-> Research integration): same additive-only pattern
+# as _HISTORICAL_BARS_MIGRATIONS above, applied to `experiments`.
+# `conditions_json` is added NULLABLE here (an existing row has no
+# value to backfill it with directly -- see
+# _migrate_legacy_experiment_conditions() below, which fills it in from
+# the old `condition_json` column right after this runs) even though a
+# BRAND NEW database's `experiments` table (created fresh from _SCHEMA
+# above) declares it NOT NULL -- that's fine: PRAGMA table_info only
+# reports a column "missing" here for an EXISTING table that predates
+# it, and a fresh table already has it from CREATE TABLE, so this ALTER
+# never runs against one. `feature_contract_version` gets a real
+# default (the CURRENT contract version) since every pre-v0.1.24
+# experiment's conditions genuinely were computed against exactly that
+# contract's `return_{N}m` features (see the data migration below).
+_EXPERIMENTS_MIGRATIONS: list[tuple[str, str]] = [
+    ("conditions_json", "ALTER TABLE experiments ADD COLUMN conditions_json TEXT"),
+    (
+        "feature_contract_version",
+        f"ALTER TABLE experiments ADD COLUMN feature_contract_version TEXT NOT NULL DEFAULT '{FEATURE_CONTRACT_VERSION}'",
+    ),
+]
 
-def _migrate(conn: sqlite3.Connection) -> None:
-    existing_columns = {row["name"] for row in conn.execute("PRAGMA table_info(historical_bars)")}
-    for column_name, alter_statement in _HISTORICAL_BARS_MIGRATIONS:
+# v0.1.24: `condition_values_json` added nullable -- unlike
+# `experiments.conditions_json`, existing `experiment_events` rows are
+# NOT individually data-migrated (see the schema comment on
+# experiment_events above for why: replace_events() already deletes
+# and recreates every one of an experiment's events on every run, so a
+# manual per-row conversion here would just be overwritten the next
+# time anyone re-runs that experiment anyway).
+_EXPERIMENT_EVENTS_MIGRATIONS: list[tuple[str, str]] = [
+    ("condition_values_json", "ALTER TABLE experiment_events ADD COLUMN condition_values_json TEXT"),
+]
+
+
+def _migrate_table(conn: sqlite3.Connection, table: str, migrations: list[tuple[str, str]]) -> None:
+    existing_columns = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
+    for column_name, alter_statement in migrations:
         if column_name not in existing_columns:
             conn.execute(alter_statement)
+
+
+def _migrate_legacy_experiment_conditions(conn: sqlite3.Connection) -> None:
+    """One-time DATA migration (v0.1.24, not just a schema one): every
+    experiment created before this version has exactly one Condition,
+    always shaped {"metric": "{N}m_return", "operator": ..., "threshold": ...}
+    -- app/models/research.py's OLD field validator rejected anything
+    else, so this is a real, deterministic conversion, never a guess.
+    "{N}m_return" maps losslessly onto the new "price.return_{N}m"
+    feature_id (see app/features/vocabulary.py -- PriceFeatures.return_Nm
+    is computed by the exact same trailing-return formula the old
+    Condition evaluated directly on bars). Runs only against rows where
+    `conditions_json` is still NULL (never migrated) -- a no-op on a
+    database that already went through this once, or a brand-new one
+    that never had an old-shape row to begin with.
+
+    Guarded on `condition_json` actually existing as a column at all:
+    a brand-new database's `experiments` table (created fresh from
+    _SCHEMA above) never had that column in the first place -- it's
+    only ever present on a database that predates v0.1.24.
+    """
+    existing_columns = {row["name"] for row in conn.execute("PRAGMA table_info(experiments)")}
+    if "condition_json" not in existing_columns:
+        return
+
+    rows = conn.execute(
+        "SELECT id, condition_json FROM experiments WHERE conditions_json IS NULL AND condition_json IS NOT NULL"
+    ).fetchall()
+    for row in rows:
+        old_condition = json.loads(row["condition_json"])
+        match = re.match(r"^(\d+)m_return$", old_condition["metric"])
+        if not match:
+            continue  # unrecognized old shape (should not happen -- the old validator only ever allowed this one) -- leave NULL rather than guess
+        operator = "=" if old_condition["operator"] == "==" else old_condition["operator"]
+        new_conditions = [
+            {"feature_id": f"price.return_{match.group(1)}m", "operator": operator, "value": old_condition["threshold"]}
+        ]
+        conn.execute("UPDATE experiments SET conditions_json = ? WHERE id = ?", (json.dumps(new_conditions), row["id"]))
+
+
+def _drop_legacy_not_null_columns(conn: sqlite3.Connection) -> None:
+    """v0.1.24: the additive ALTER TABLE migrations above are NOT enough
+    on their own to make an existing pre-v0.1.24 database usable --
+    `experiments.condition_json` and `experiment_events.condition_value`
+    are still declared NOT NULL on such a database (ALTER TABLE ADD
+    COLUMN cannot remove a constraint on an EXISTING column), and
+    current code no longer supplies either one on INSERT (both were
+    REPLACED, not merely joined by a new column -- see the schema
+    comments above). Confirmed by a real run against a real pre-v0.1.24
+    database: creating a new experiment raised `sqlite3.IntegrityError:
+    NOT NULL constraint failed: experiments.condition_json` before this
+    existed.
+
+    SQLite has no ALTER TABLE ... ALTER COLUMN / DROP NOT NULL -- this
+    is SQLite's own documented procedure for a constraint change:
+    build the table in its current (v0.1.24) shape under a temporary
+    name, copy every row across, drop the old table, rename the new one
+    into place. Must run AFTER _migrate_legacy_experiment_conditions()
+    above -- it depends on every row's `conditions_json`/
+    `feature_contract_version` already being populated (the new
+    `experiments` table declares both NOT NULL). A no-op (checked via
+    PRAGMA table_info, same guard as every migration in this file) on a
+    database that's already been rebuilt once, or a brand-new one that
+    was never in the old shape to begin with.
+    """
+    experiments_columns = {row["name"] for row in conn.execute("PRAGMA table_info(experiments)")}
+    if "condition_json" in experiments_columns:
+        conn.executescript(
+            """
+            CREATE TABLE experiments_v0124 (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                hypothesis TEXT NOT NULL,
+                symbol TEXT NOT NULL,
+                start_date TEXT NOT NULL,
+                end_date TEXT NOT NULL,
+                timeframe TEXT NOT NULL,
+                provider TEXT NOT NULL,
+                conditions_json TEXT NOT NULL,
+                outcome_json TEXT NOT NULL,
+                feature_contract_version TEXT NOT NULL,
+                status TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                completed_at TEXT,
+                results_json TEXT,
+                error_message TEXT
+            );
+            INSERT INTO experiments_v0124
+                (id, name, hypothesis, symbol, start_date, end_date, timeframe, provider,
+                 conditions_json, outcome_json, feature_contract_version, status, created_at,
+                 completed_at, results_json, error_message)
+            SELECT id, name, hypothesis, symbol, start_date, end_date, timeframe, provider,
+                   conditions_json, outcome_json, feature_contract_version, status, created_at,
+                   completed_at, results_json, error_message
+            FROM experiments;
+            DROP TABLE experiments;
+            ALTER TABLE experiments_v0124 RENAME TO experiments;
+            """
+        )
+
+    events_columns = {row["name"] for row in conn.execute("PRAGMA table_info(experiment_events)")}
+    if "condition_value" in events_columns:
+        conn.executescript(
+            """
+            CREATE TABLE experiment_events_v0124 (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                experiment_id TEXT NOT NULL,
+                symbol TEXT NOT NULL,
+                signal_timestamp TEXT NOT NULL,
+                signal_price REAL NOT NULL,
+                condition_values_json TEXT NOT NULL,
+                outcome_timestamp TEXT NOT NULL,
+                outcome_price REAL NOT NULL,
+                outcome_value REAL NOT NULL,
+                success INTEGER NOT NULL
+            );
+            INSERT INTO experiment_events_v0124
+                (id, experiment_id, symbol, signal_timestamp, signal_price, condition_values_json,
+                 outcome_timestamp, outcome_price, outcome_value, success)
+            SELECT id, experiment_id, symbol, signal_timestamp, signal_price,
+                   COALESCE(condition_values_json, '{}'),
+                   outcome_timestamp, outcome_price, outcome_value, success
+            FROM experiment_events;
+            DROP TABLE experiment_events;
+            ALTER TABLE experiment_events_v0124 RENAME TO experiment_events;
+            CREATE INDEX IF NOT EXISTS idx_experiment_events_experiment
+                ON experiment_events (experiment_id, signal_timestamp);
+            """
+        )
+
+
+def _migrate(conn: sqlite3.Connection) -> None:
+    _migrate_table(conn, "historical_bars", _HISTORICAL_BARS_MIGRATIONS)
+    _migrate_table(conn, "experiments", _EXPERIMENTS_MIGRATIONS)
+    _migrate_table(conn, "experiment_events", _EXPERIMENT_EVENTS_MIGRATIONS)
+    _migrate_legacy_experiment_conditions(conn)
+    _drop_legacy_not_null_columns(conn)
     conn.commit()
 
 

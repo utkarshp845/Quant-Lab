@@ -1,3 +1,4 @@
+import type { FeatureCondition } from "../types/research";
 import { fmtNumber, fmtPercent } from "./format";
 
 /** Null-safe wrapper around the existing fmtPercent/fmtNumber helpers
@@ -15,4 +16,26 @@ export function fmtNumberOrDash(value: number | null, digits = 4): string {
 
 export function fmtIntOrDash(value: number | null): string {
   return value === null ? "—" : Math.round(value).toLocaleString();
+}
+
+/** Renders one FeatureCondition as plain text, e.g.
+ * "price_position.vwap_distance > 0" or
+ * "volatility.volatility_percentile between 0.5 and 0.7" -- used
+ * anywhere an experiment's conditions need a human-readable summary
+ * (ExperimentResultsView, ExperimentCompare) without needing the full
+ * feature vocabulary fetched just to look up a display name; the raw
+ * feature_id (e.g. "price_position.vwap_distance") is itself a
+ * readable, self-describing string. */
+export function describeFeatureCondition(condition: FeatureCondition): string {
+  if (condition.operator === "between") {
+    return `${condition.feature_id} between ${condition.value} and ${condition.value_max}`;
+  }
+  return `${condition.feature_id} ${condition.operator} ${condition.value}`;
+}
+
+/** Every condition in an experiment, AND-joined -- the text form of
+ * "Price vs VWAP > 0 AND RSI 14 between 50 and 70 AND Volume Ratio >
+ * 1.5" this integration's spec describes. */
+export function describeConditions(conditions: FeatureCondition[]): string {
+  return conditions.map(describeFeatureCondition).join(" AND ");
 }

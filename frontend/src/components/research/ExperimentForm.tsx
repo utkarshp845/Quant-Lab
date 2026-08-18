@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react";
 import { ApiError, createExperiment } from "../../api/client";
 import type { Timeframe } from "../../types/marketData";
-import type { ConditionOperator, Experiment, ExperimentCreateRequest } from "../../types/research";
+import type { ConditionOperator, Experiment, ExperimentCreateRequest, FeatureCondition } from "../../types/research";
 import { ConditionBuilder } from "./ConditionBuilder";
 import { OutcomeBuilder } from "./OutcomeBuilder";
 import { dateRangeWarnings } from "./researchWarnings";
@@ -37,9 +37,7 @@ export interface ExperimentFormPrefill {
   end_date: string;
   timeframe: string;
   provider: string;
-  conditionMinutes: string;
-  conditionOperator: ConditionOperator;
-  conditionThreshold: number;
+  conditions: FeatureCondition[];
   outcomeHorizon: number;
   outcomeOperator: ConditionOperator;
   outcomeThreshold: number;
@@ -53,7 +51,6 @@ export interface ExperimentFormPrefill {
  * .../run again, no duplication needed) and "re-run against a
  * different dataset/date range" (this path). */
 export function prefillFromExperiment(experiment: Experiment): ExperimentFormPrefill {
-  const minutesMatch = /^(\d+)m_return$/.exec(experiment.condition.metric);
   return {
     name: `${experiment.name} (copy)`,
     hypothesis: experiment.hypothesis,
@@ -62,9 +59,7 @@ export function prefillFromExperiment(experiment: Experiment): ExperimentFormPre
     end_date: experiment.end_date,
     timeframe: experiment.timeframe,
     provider: experiment.provider,
-    conditionMinutes: minutesMatch ? minutesMatch[1] : "30",
-    conditionOperator: experiment.condition.operator,
-    conditionThreshold: experiment.condition.threshold,
+    conditions: experiment.conditions,
     outcomeHorizon: experiment.outcome.horizon_minutes,
     outcomeOperator: experiment.outcome.operator,
     outcomeThreshold: experiment.outcome.threshold,
@@ -79,9 +74,7 @@ const BLANK_PREFILL: ExperimentFormPrefill = {
   end_date: todayIso(),
   timeframe: "5m",
   provider: "alpaca",
-  conditionMinutes: "30",
-  conditionOperator: "<=",
-  conditionThreshold: -0.01,
+  conditions: [{ feature_id: "price.return_30m", operator: "<=", value: -0.01 }],
   outcomeHorizon: 60,
   outcomeOperator: "<=",
   outcomeThreshold: -0.005,
@@ -107,12 +100,7 @@ export function ExperimentForm({
   const [endDate, setEndDate] = useState(initial.end_date);
   const [timeframe, setTimeframe] = useState<Timeframe>(initial.timeframe as Timeframe);
   const [provider, setProvider] = useState(initial.provider);
-  const [conditionMinutes, setConditionMinutes] = useState(initial.conditionMinutes);
-  const [condition, setCondition] = useState({
-    metric: `${initial.conditionMinutes}m_return`,
-    operator: initial.conditionOperator,
-    threshold: initial.conditionThreshold,
-  });
+  const [conditions, setConditions] = useState<FeatureCondition[]>(initial.conditions);
   const [outcome, setOutcome] = useState({
     metric: "forward_return" as const,
     horizon_minutes: initial.outcomeHorizon,
@@ -127,9 +115,8 @@ export function ExperimentForm({
   const warnings = useMemo(() => dateRangeWarnings(startDate, endDate), [startDate, endDate]);
   const existingCount = sameSymbolExperimentCount(symbol);
 
-  const minutesValid = /^\d+$/.test(conditionMinutes) && Number(conditionMinutes) > 0;
   const canSubmit =
-    name.trim() !== "" && hypothesis.trim() !== "" && minutesValid && endDate >= startDate && !submitting;
+    name.trim() !== "" && hypothesis.trim() !== "" && conditions.length > 0 && endDate >= startDate && !submitting;
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -146,7 +133,7 @@ export function ExperimentForm({
       end_date: endDate,
       timeframe,
       provider,
-      condition: { ...condition, metric: `${conditionMinutes}m_return` },
+      conditions,
       outcome,
     };
     try {
@@ -238,8 +225,8 @@ export function ExperimentForm({
 
       <WarningsPanel warnings={warnings} />
 
-      <h3 className="experiment-form-subheading">Condition</h3>
-      <ConditionBuilder value={condition} minutes={conditionMinutes} onChangeMinutes={setConditionMinutes} onChange={setCondition} />
+      <h3 className="experiment-form-subheading">Conditions (AND)</h3>
+      <ConditionBuilder conditions={conditions} onChange={setConditions} />
 
       <h3 className="experiment-form-subheading">Outcome</h3>
       <OutcomeBuilder value={outcome} onChange={setOutcome} />
@@ -262,7 +249,7 @@ export function ExperimentForm({
           )}
         </div>
       )}
-      {!minutesValid && <div className="error-banner">Condition minutes must be a positive whole number.</div>}
+      {conditions.length === 0 && <div className="error-banner">At least one condition is required.</div>}
       {endDate < startDate && <div className="error-banner">End date must not be before start date.</div>}
 
       <div className="experiment-form-actions">
