@@ -5,6 +5,16 @@ true) and an Outcome (did the following period behave as predicted),
 the individual ExperimentEvent observations that produced, and the
 ExperimentResults aggregated from them.
 
+v0.1.30 (Experiment Freeze & Provenance v1): Experiment gained a
+SECOND lifecycle axis, `lifecycle_state` (ExperimentLifecycleState --
+see its own docstring), and the fields that go with freezing it
+(`oos_partition_id`/`hypothesis_hash`/`frozen_at`/`archived_at`). Every
+field this module already treated as immutable stays immutable, by the
+same "no edit endpoint exists" mechanism as always -- see
+app/research/lifecycle.py for the freeze/hash/transition logic built on
+top, and app/models/experiment_freeze.py for the immutable snapshot
+shape persisted at freeze time.
+
 v0.1.24 (Feature <-> Research integration): a Condition used to be a
 free-standing metric/operator/threshold triple, hardcoding its own tiny
 metric vocabulary ("{N}m_return" only, parsed by regex). It is now
@@ -61,6 +71,39 @@ class ExperimentStatus(str, Enum):
     RUNNING = "running"
     COMPLETED = "completed"
     FAILED = "failed"
+
+
+class ExperimentLifecycleState(str, Enum):
+    """Experiment Freeze & Provenance v1 (v0.1.30): a SECOND, independent
+    lifecycle axis from ExperimentStatus above -- orthogonal, not a
+    replacement. ExperimentStatus tracks whether a RUN of an experiment
+    (POST .../run, against development data) has executed yet; this
+    tracks whether the experiment's own HYPOTHESIS DEFINITION has been
+    frozen for OOS evaluation. A DRAFT-lifecycle experiment can be
+    COMPLETED/FAILED/RUNNING many times over as its owner iterates
+    (exactly today's existing behavior, unchanged) -- freezing is a
+    separate, one-way step layered on top, once iteration is done.
+
+    Valid transitions (see app/research/lifecycle.py::validate_transition(),
+    the single place this table is enforced):
+
+        DRAFT -> FROZEN            (POST .../freeze)
+        FROZEN -> OOS_EVALUATED    (infrastructure only -- see
+                                    research_repository.mark_oos_evaluated();
+                                    no route sets this yet, since the OOS
+                                    evaluation operation itself is out of
+                                    this feature's scope)
+        FROZEN -> ARCHIVED         (POST .../archive)
+        OOS_EVALUATED -> ARCHIVED  (POST .../archive)
+
+    Every other transition (including any transition OUT of ARCHIVED,
+    or DRAFT -> anything but FROZEN) is rejected.
+    """
+
+    DRAFT = "draft"
+    FROZEN = "frozen"
+    OOS_EVALUATED = "oos_evaluated"
+    ARCHIVED = "archived"
 
 
 class ConditionOperator(str, Enum):
@@ -270,6 +313,26 @@ class Experiment(BaseModel):
     contract makes old experiments simply find no (version-matching)
     data until they are duplicated (see the frontend's existing
     "duplicate experiment" flow) against the new contract on purpose.
+
+    `lifecycle_state`/`oos_partition_id`/`hypothesis_hash`/`frozen_at`/
+    `archived_at` (Experiment Freeze & Provenance v1, v0.1.30) are
+    ADDITIVE to everything above -- every field this docstring already
+    called immutable stays exactly that immutable, enforced exactly as
+    it already was (no update/edit endpoint has ever existed for any of
+    them). `lifecycle_state` defaults to DRAFT so every experiment
+    created before this version, and every existing test that builds
+    one via Experiment.new(), is unaffected. `oos_partition_id` is the
+    ONE field on this model that IS mutable while `lifecycle_state` is
+    still DRAFT (see app/api/experiment_freeze.py's associate-partition
+    route) -- it becomes immutable the instant freezing succeeds, the
+    same instant `hypothesis_hash`/`frozen_at` are set (see
+    app/research/lifecycle.py::build_freeze_snapshot() and
+    app/storage/research_repository.py::freeze_experiment(), which sets
+    all three together, in one write). `hypothesis_hash` is
+    deliberately NOT set at Experiment.new() time (it is meaningless
+    before a freeze -- an unfrozen experiment's definition can still
+    change in spirit even though no field-level edit exists today,
+    since nothing has committed to it being final yet).
     """
 
     id: str
@@ -288,6 +351,11 @@ class Experiment(BaseModel):
     completed_at: datetime | None = None
     results: ExperimentResults | None = None
     error_message: str | None = None
+    lifecycle_state: ExperimentLifecycleState = ExperimentLifecycleState.DRAFT
+    oos_partition_id: str | None = None
+    hypothesis_hash: str | None = None
+    frozen_at: datetime | None = None
+    archived_at: datetime | None = None
 
     @classmethod
     def new(cls, request: ExperimentCreateRequest) -> "Experiment":
@@ -297,7 +365,9 @@ class Experiment(BaseModel):
         v0.1.24's feature_id/operator-vs-feature-type checks) happens
         at the API route BEFORE this is called -- see
         app/api/research.py -- so any Experiment this produces is
-        already known-runnable."""
+        already known-runnable. `lifecycle_state` starts DRAFT (v0.1.30)
+        -- freezing is always a separate, later step (POST .../freeze),
+        never something a brand-new experiment starts as."""
         return cls(
             id=str(uuid.uuid4()),
             name=request.name,
@@ -312,6 +382,7 @@ class Experiment(BaseModel):
             feature_contract_version=FEATURE_CONTRACT_VERSION,
             status=ExperimentStatus.DRAFT,
             created_at=datetime.now(timezone.utc),
+            lifecycle_state=ExperimentLifecycleState.DRAFT,
         )
 
 

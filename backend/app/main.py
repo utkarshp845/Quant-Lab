@@ -17,10 +17,33 @@ app/api/features.py), and (Backtesting v1, v0.1.25) an event-based
 historical backtester that walks an existing Research experiment's
 bars chronologically, enters at the next bar's open, and measures
 forward return/MFE/MAE at several configurable bar-count horizons (see
-app/backtesting/, app/api/backtesting.py) -- layered on top -- no
-brokerage connectivity, no trade execution, no auth. See the README for
-the full list of assumptions and what is intentionally not implemented
-yet.
+app/backtesting/, app/api/backtesting.py), and (OOS / Holdout Partition
+Framework v1, v0.1.29) a way to explicitly split an existing symbol/
+timeframe/provider's stored bars into a development window and a
+later, non-overlapping holdout window, with development access
+unrestricted and holdout access gated behind an explicit confirmation
+flag (see app/oos/, app/api/oos_partitions.py -- statistical testing
+against the holdout side is intentionally NOT implemented yet; this is
+the partitioning/provenance boundary only), and (Experiment Freeze &
+Provenance v1, v0.1.30) a way to freeze a Research Experiment's
+hypothesis definition -- DRAFT -> FROZEN -> OOS_EVALUATED/ARCHIVED,
+with a deterministic hypothesis_hash, an immutable point-in-time
+snapshot, and an optional, validated link to an OOS partition (see
+app/research/lifecycle.py, app/api/experiment_freeze.py -- the actual
+OOS-evaluation operation is intentionally NOT implemented yet; this is
+the lifecycle/provenance boundary only), and (OOS Evaluation v1,
+v0.1.31) the actual OOS-evaluation operation itself -- given a FROZEN
+experiment linked to an OOS partition, reads ONLY the partition's
+holdout data (via app/oos/access.py::get_holdout_bars(...,
+confirm_oos_validation_use=True), the sole holdout access path),
+computes features under the frozen contract with bounded development
+warm-up strictly for trailing-window context, evaluates the frozen
+condition, and runs Backtesting v1's own unmodified engine against it,
+persisting an append-only OOSEvaluationResult and advancing
+FROZEN -> OOS_EVALUATED on success (see app/oos_evaluation/,
+app/api/oos_evaluation.py) -- layered on top -- no brokerage
+connectivity, no trade execution, no auth. See the README for the full
+list of assumptions and what is intentionally not implemented yet.
 """
 
 import asyncio
@@ -38,8 +61,11 @@ from app.api.historical_comparison import router as historical_comparison_router
 from app.api.historical_data import router as historical_data_router
 from app.api.historical_storage import router as historical_storage_router
 from app.api.features import router as features_router
+from app.api.experiment_freeze import router as experiment_freeze_router
 from app.api.market_data import router as market_data_router
 from app.api.market_data_stream import router as market_data_stream_router
+from app.api.oos_evaluation import router as oos_evaluation_router
+from app.api.oos_partitions import router as oos_partitions_router
 from app.api.research import router as research_router
 from app.ingestion.auto_ingest import run_ingestion_loop
 
@@ -124,6 +150,9 @@ app.include_router(historical_storage_router, prefix="/api")
 app.include_router(research_router, prefix="/api")
 app.include_router(features_router, prefix="/api")
 app.include_router(backtesting_router, prefix="/api")
+app.include_router(oos_partitions_router, prefix="/api")
+app.include_router(experiment_freeze_router, prefix="/api")
+app.include_router(oos_evaluation_router, prefix="/api")
 
 
 @app.get("/api/health")

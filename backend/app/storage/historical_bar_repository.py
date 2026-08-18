@@ -240,6 +240,65 @@ def get_bars(
     ]
 
 
+def get_bars_in_range(
+    *,
+    symbol: str,
+    timeframe: str,
+    provider: str,
+    start: datetime,
+    end: datetime,
+    db_path: str | Path | None = None,
+) -> list[HistoricalBar]:
+    """Same read as get_bars() above, but bounded by full timestamps
+    (both inclusive) rather than whole calendar dates. Added for the
+    OOS / Holdout Partition Framework (v0.1.29, app/oos/access.py),
+    whose partition boundaries are timestamps, not dates -- a 1-minute
+    or 5-minute timeframe partition needs an intraday cut point (e.g.
+    "development ends at 2025-06-30T15:59:00Z"), which get_bars()'s
+    whole-day granularity cannot express. get_bars() itself is
+    unmodified and remains the right call for every existing caller
+    (Research, Backtesting), whose own start_date/end_date are
+    calendar dates, not timestamps.
+
+    A naive (no tzinfo) `start`/`end` is assumed UTC, same convention
+    as _to_storage_timestamp() below (what every stored bar's own
+    timestamp was already normalized through).
+    """
+    symbol = symbol.upper()
+    start_ts = _to_storage_timestamp(start)
+    end_ts = _to_storage_timestamp(end)
+
+    conn = get_connection(db_path)
+    try:
+        rows = conn.execute(
+            """
+            SELECT symbol, timeframe, provider, timestamp, open, high, low, close, volume
+            FROM historical_bars
+            WHERE symbol = ? AND timeframe = ? AND provider = ?
+              AND timestamp >= ? AND timestamp <= ?
+            ORDER BY timestamp ASC
+            """,
+            (symbol, timeframe, provider, start_ts, end_ts),
+        ).fetchall()
+    finally:
+        conn.close()
+
+    return [
+        HistoricalBar(
+            symbol=row["symbol"],
+            timeframe=row["timeframe"],
+            provider=row["provider"],
+            timestamp=datetime.fromisoformat(row["timestamp"]),
+            open=row["open"],
+            high=row["high"],
+            low=row["low"],
+            close=row["close"],
+            volume=row["volume"],
+        )
+        for row in rows
+    ]
+
+
 def get_quarantined_bars(
     *,
     symbol: str,
