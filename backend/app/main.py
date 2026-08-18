@@ -10,12 +10,17 @@ growing without a human clicking "Save to Database" every time (see
 app/ingestion/auto_ingest.py), (Research v1, v0.1.20) a hypothesis-
 testing engine that searches the normalized historical dataset for
 every occurrence of a condition and measures its outcome (see
-app/research/, app/api/research.py), and (Feature Engine v1, v0.1.21) a
+app/research/, app/api/research.py), (Feature Engine v1, v0.1.21) a
 deterministic feature-computation layer that transforms normalized
 bars into timestamped feature records for research (see app/features/,
-app/api/features.py) -- layered on top -- no brokerage connectivity, no
-trade execution, no auth. See the README for the full list of
-assumptions and what is intentionally not implemented yet.
+app/api/features.py), and (Backtesting v1, v0.1.25) an event-based
+historical backtester that walks an existing Research experiment's
+bars chronologically, enters at the next bar's open, and measures
+forward return/MFE/MAE at several configurable bar-count horizons (see
+app/backtesting/, app/api/backtesting.py) -- layered on top -- no
+brokerage connectivity, no trade execution, no auth. See the README for
+the full list of assumptions and what is intentionally not implemented
+yet.
 """
 
 import asyncio
@@ -26,6 +31,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app import config
+from app.api.backtesting import router as backtesting_router
 from app.api.bear_put_spread import router as bear_put_spread_router
 from app.api.csv_import import router as csv_import_router
 from app.api.historical_comparison import router as historical_comparison_router
@@ -117,6 +123,7 @@ app.include_router(historical_comparison_router, prefix="/api")
 app.include_router(historical_storage_router, prefix="/api")
 app.include_router(research_router, prefix="/api")
 app.include_router(features_router, prefix="/api")
+app.include_router(backtesting_router, prefix="/api")
 
 
 @app.get("/api/health")
