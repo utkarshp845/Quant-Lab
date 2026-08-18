@@ -20,7 +20,15 @@ from pathlib import Path
 
 from pydantic import TypeAdapter
 
-from app.models.research import Experiment, ExperimentEvent, ExperimentResults, ExperimentStatus, FeatureCondition, Outcome
+from app.models.research import (
+    Experiment,
+    ExperimentEvent,
+    ExperimentLifecycleState,
+    ExperimentResults,
+    ExperimentStatus,
+    FeatureCondition,
+    Outcome,
+)
 from app.storage.db import get_connection
 
 # For (de)serializing `conditions` -- a LIST of FeatureCondition, unlike
@@ -36,7 +44,9 @@ def save_experiment(experiment: Experiment, *, db_path: str | Path | None = None
     """Inserts a brand-new experiment row -- always a DRAFT fresh out of
     Experiment.new(). experiments.id is the primary key, so this is
     only ever called once per experiment; every later change to that
-    row goes through update_experiment_run() below instead."""
+    row goes through update_experiment_run() (execution status) or
+    freeze_experiment()/set_oos_partition()/mark_oos_evaluated()/
+    mark_archived() (v0.1.30, lifecycle state) below instead."""
     conn = get_connection(db_path)
     try:
         with conn:
@@ -45,8 +55,9 @@ def save_experiment(experiment: Experiment, *, db_path: str | Path | None = None
                 INSERT INTO experiments
                     (id, name, hypothesis, symbol, start_date, end_date, timeframe, provider,
                      conditions_json, outcome_json, feature_contract_version, status, created_at,
-                     completed_at, results_json, error_message)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     completed_at, results_json, error_message, lifecycle_state, oos_partition_id,
+                     hypothesis_hash, frozen_at, archived_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     experiment.id,
@@ -65,6 +76,11 @@ def save_experiment(experiment: Experiment, *, db_path: str | Path | None = None
                     experiment.completed_at.isoformat() if experiment.completed_at else None,
                     experiment.results.model_dump_json() if experiment.results else None,
                     experiment.error_message,
+                    experiment.lifecycle_state.value,
+                    experiment.oos_partition_id,
+                    experiment.hypothesis_hash,
+                    experiment.frozen_at.isoformat() if experiment.frozen_at else None,
+                    experiment.archived_at.isoformat() if experiment.archived_at else None,
                 ),
             )
     finally:
@@ -118,6 +134,136 @@ def update_experiment_run(
                     experiment_id,
                 ),
             )
+    finally:
+        conn.close()
+
+
+def set_oos_partition(experiment_id: str, oos_partition_id: str | None, *, db_path: str | Path | None = None) -> bool:
+    """Associates (or clears, if `oos_partition_id` is None) the OOS
+    partition a DRAFT experiment reserves (requirement 6: "a DRAFT
+    experiment may be associated with a partition"). Restricted to
+    `lifecycle_state = 'draft'` in the WHERE clause itself -- defense
+    in depth alongside app/api/experiment_freeze.py's own check before
+    calling this, the same "the repository re-checks what the route
+    already checked" idiom app/oos/access.py's confirm flag applies at
+    the function layer, not just the HTTP layer. Returns True if a row
+    was actually updated (id exists AND was still draft), False
+    otherwise, so the caller can tell "no such experiment" apart from
+    "not draft anymore" apart from "succeeded" without a second read.
+    """
+    conn = get_connection(db_path)
+    try:
+        with conn:
+            cursor = conn.execute(
+                "UPDATE experiments SET oos_partition_id = ? WHERE id = ? AND lifecycle_state = ?",
+                (oos_partition_id, experiment_id, ExperimentLifecycleState.DRAFT.value),
+            )
+        return cursor.rowcount > 0
+    finally:
+        conn.close()
+
+
+def freeze_experiment(
+    experiment_id: str,
+    *,
+    hypothesis_hash: str,
+    frozen_at: datetime,
+    oos_partition_id: str | None,
+    db_path: str | Path | None = None,
+) -> bool:
+    """The DRAFT -> FROZEN write (requirement 1/2): sets
+    lifecycle_state/hypothesis_hash/frozen_at/oos_partition_id together,
+    in the one UPDATE, so a reader can never observe a partially-frozen
+    row (a hash with no frozen_at, or vice versa). `oos_partition_id`
+    is written again here (not just relied upon from a prior
+    set_oos_partition() call) so the value captured in the
+    ExperimentFreezeSnapshot at the exact same moment (app/research/
+    lifecycle.py::build_freeze_snapshot(), called with this same
+    experiment) is guaranteed to match what ends up on the live row --
+    both come from the identical in-memory Experiment app/api/
+    experiment_freeze.py's freeze route already validated. Restricted
+    to `lifecycle_state = 'draft'` in the WHERE clause -- the same
+    defense-in-depth as set_oos_partition() above; app/research/
+    lifecycle.py::validate_transition() is what the route checks
+    BEFORE calling this, this is the second, independent check.
+    Returns True if the row was actually frozen (was still draft),
+    False otherwise."""
+    conn = get_connection(db_path)
+    try:
+        with conn:
+            cursor = conn.execute(
+                """
+                UPDATE experiments
+                SET lifecycle_state = ?, hypothesis_hash = ?, frozen_at = ?, oos_partition_id = ?
+                WHERE id = ? AND lifecycle_state = ?
+                """,
+                (
+                    ExperimentLifecycleState.FROZEN.value,
+                    hypothesis_hash,
+                    frozen_at.isoformat(),
+                    oos_partition_id,
+                    experiment_id,
+                    ExperimentLifecycleState.DRAFT.value,
+                ),
+            )
+        return cursor.rowcount > 0
+    finally:
+        conn.close()
+
+
+def mark_oos_evaluated(experiment_id: str, *, oos_evaluated_at: datetime, db_path: str | Path | None = None) -> bool:
+    """FROZEN -> OOS_EVALUATED (requirement 1's third transition).
+    INFRASTRUCTURE ONLY, per this feature's own scope: no HTTP route
+    calls this yet, because the actual OOS-evaluation operation that
+    would legitimately call it does not exist in this codebase (a
+    future feature's job). Exists so that transition is real,
+    persistable, and directly testable today rather than a table entry
+    with nothing behind it. `oos_evaluated_at` is accepted but not (yet)
+    persisted to its own column -- there is no
+    `experiments.oos_evaluated_at` column, deliberately: adding
+    storage for a timestamp nothing yet produces would be exactly the
+    kind of unused-column speculation this app's schema comments
+    elsewhere (e.g. raw_ingestions') avoid. Restricted to
+    `lifecycle_state = 'frozen'` in the WHERE clause, matching every
+    other lifecycle-write function above."""
+    conn = get_connection(db_path)
+    try:
+        with conn:
+            cursor = conn.execute(
+                "UPDATE experiments SET lifecycle_state = ? WHERE id = ? AND lifecycle_state = ?",
+                (ExperimentLifecycleState.OOS_EVALUATED.value, experiment_id, ExperimentLifecycleState.FROZEN.value),
+            )
+        return cursor.rowcount > 0
+    finally:
+        conn.close()
+
+
+def mark_archived(experiment_id: str, *, archived_at: datetime, db_path: str | Path | None = None) -> bool:
+    """FROZEN -> ARCHIVED or OOS_EVALUATED -> ARCHIVED (requirement 1's
+    two archive transitions) -- the WHERE clause allows either source
+    state, matching _VALID_TRANSITIONS in app/research/lifecycle.py
+    exactly; app/api/experiment_freeze.py's archive route calls
+    validate_transition() with the experiment's CURRENT state before
+    ever reaching this, so this is the second, defense-in-depth check,
+    not the only one."""
+    conn = get_connection(db_path)
+    try:
+        with conn:
+            cursor = conn.execute(
+                """
+                UPDATE experiments
+                SET lifecycle_state = ?, archived_at = ?
+                WHERE id = ? AND lifecycle_state IN (?, ?)
+                """,
+                (
+                    ExperimentLifecycleState.ARCHIVED.value,
+                    archived_at.isoformat(),
+                    experiment_id,
+                    ExperimentLifecycleState.FROZEN.value,
+                    ExperimentLifecycleState.OOS_EVALUATED.value,
+                ),
+            )
+        return cursor.rowcount > 0
     finally:
         conn.close()
 
@@ -216,6 +362,11 @@ def _row_to_experiment(row) -> Experiment:
         completed_at=datetime.fromisoformat(row["completed_at"]) if row["completed_at"] else None,
         results=ExperimentResults.model_validate_json(row["results_json"]) if row["results_json"] else None,
         error_message=row["error_message"],
+        lifecycle_state=ExperimentLifecycleState(row["lifecycle_state"]),
+        oos_partition_id=row["oos_partition_id"],
+        hypothesis_hash=row["hypothesis_hash"],
+        frozen_at=datetime.fromisoformat(row["frozen_at"]) if row["frozen_at"] else None,
+        archived_at=datetime.fromisoformat(row["archived_at"]) if row["archived_at"] else None,
     )
 
 

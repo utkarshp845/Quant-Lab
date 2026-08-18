@@ -196,10 +196,26 @@ historical-bar fetch/validate/quarantine/store/raw-audit, an opt-in
 unattended ingestion loop, a deep-range historical backfill script,
 Research v1 (hypothesis testing over feature-based, AND-combined
 conditions) integrated with Feature Engine v1 (deterministic feature
-computation exposed as a canonical vocabulary), and Backtesting v1
+computation exposed as a canonical vocabulary), Backtesting v1
 (event-based historical walk over an existing Research experiment:
 next-bar-open entry, multi-horizon forward return/MFE/MAE, every signal
-persisted and inspectable).
+persisted and inspectable), Statistical Validation v1/v2 (dependence-
+aware significance testing of a backtest's results against an
+unconditional baseline), and the OOS / Holdout Partition Framework v1
+(explicit development-vs-holdout dataset partitioning, with development
+access unrestricted and holdout access gated behind an explicit
+confirmation flag — see §20; the partitioning/provenance boundary
+only, no OOS statistical test reads a holdout window through it yet),
+Experiment Freeze & Provenance v1 (§21 — an explicit DRAFT → FROZEN →
+OOS_EVALUATED → ARCHIVED lifecycle for a Research Experiment, a
+deterministic `hypothesis_hash` and immutable snapshot captured at
+freeze time, and validated linkage to an OOS partition), and OOS
+Evaluation v1 (§22 — the actual OOS-evaluation operation: given a
+FROZEN experiment linked to a partition, evaluates its frozen
+hypothesis against ONLY the partition's holdout data via
+`get_holdout_bars(..., confirm_oos_validation_use=True)`, orchestrating
+the existing Feature Engine and Backtesting v1 engine unmodified, and
+persists an immutable, append-only result).
 
 **Not implemented, deliberately:** machine learning, authentication/user
 accounts, portfolio management, historical **options** data (equity bars
@@ -357,7 +373,13 @@ every phase, including any future paper-trading or signal-generation
 work — the tool's job stays "these match your criteria," never "buy
 this." Live execution of a real trade is not planned and, regardless of
 what the codebase might someday support, this assistant will not place a
-real trade or move real capital on your behalf, ever.
+real trade or move real capital on your behalf, ever. OOS Evaluation v1
+(section 22) runs exactly one deterministic backtest of an
+already-frozen hypothesis against holdout data — it does not optimize
+a threshold, search parameters, apply ML, construct a strategy, or
+paper-trade; strategy optimization/parameter search/ML/strategy
+construction/paper trading over holdout data remain explicitly out of
+scope for every OOS-related feature in this codebase.
 
 ## 11. Real-time streaming
 
@@ -386,7 +408,7 @@ consumers built on top of it.
 
 ## 13. Testing
 
-`cd backend && ./venv/bin/pytest` — 902+ deterministic tests, all against
+`cd backend && ./venv/bin/pytest` — 1072+ deterministic tests, all against
 synthetic fixtures or mocked HTTP, no live provider credentials or
 network access required anywhere in the suite. Manual, opt-in scripts
 that DO hit real provider APIs with your own credentials
@@ -404,11 +426,15 @@ backend/
     calculations/          Pure math: bear put spread, probability distribution, Monte Carlo, stats
     ingestion/              CSV parsing + normalization + bar validation
     providers/               MarketDataProvider + Alpaca/Massive/Schwab/CSV implementations
-    storage/                 SQLite schema + one repository per table family (bars, raw, research, features, backtests)
+    storage/                 SQLite schema + one repository per table family (bars, raw, research, features, backtests, oos partitions)
     streaming/                 Reconnecting WebSocket streams + the per-(provider,symbol) hub
     research/                   Research v1 -- pure condition/outcome engine (see section 15)
     features/                   Feature Engine v1 -- pure feature computation (see section 16)
     backtesting/                 Backtesting v1 -- pure chronological walk + aggregation (see section 17)
+    statistical_validation/      Statistical Validation v1/v2 -- dependence-aware significance testing (see section 18/19)
+    oos/                          OOS / Holdout Partition Framework v1 -- classification + access boundary (see section 20)
+    research/lifecycle.py          Experiment Freeze & Provenance v1 -- transitions, hash, partition linkage (see section 21)
+    oos_evaluation/                OOS Evaluation v1 -- warm-up + orchestration of the frozen hypothesis vs. holdout data (see section 22)
     api/                         One router per route group, mounted in main.py
   scripts/                Manual/opt-in real-API checks, Schwab OAuth bootstrap, dev.sh
   tests/                  One test file per module above, all deterministic/offline
@@ -735,6 +761,317 @@ value, and a full synthetic pipeline exercising population-count
 reconciliation, both methods' CI/p-value validity, and the same
 error-handling guarantees as V1.
 
+## 20. OOS / Holdout Partition Framework v1
+
+The first step toward reproducible out-of-sample validation: a way to
+explicitly split an existing symbol/timeframe/provider's already-stored
+bars (`historical_bars` — never duplicated) into a **development**
+window and a later, non-overlapping **holdout** window, and a real
+technical boundary against *accidentally* reading the holdout side
+while iterating on a hypothesis. It does **not** implement OOS
+statistical testing, strategy optimization, parameter searches, ML,
+strategy construction, or paper trading — this is the partitioning and
+provenance foundation those would be built on, not one of them.
+
+**Partition model** (`app/models/oos_partition.py`): an `OOSPartition`
+holds `symbol`/`timeframe`/`provider`, four boundary timestamps
+(`development_start`/`development_end`/`holdout_start`/`holdout_end`),
+`created_at`, and a deterministic `id`. `development_end` must be
+strictly before `holdout_start` — a touching or overlapping boundary is
+rejected by a pydantic validator before a partition can even be
+constructed, both at the API layer (`OOSPartitionCreateRequest`) and on
+`OOSPartition` itself (defense in depth for a row rebuilt from the
+database).
+
+**Determinism** (requirement 5): `id` is a SHA-256 hash of
+provider/symbol/timeframe/the four boundary timestamps
+(`compute_partition_id()`) — never a random id. Creating the identical
+partition twice is idempotent: `oos_partition_repository.save_partition()`
+INSERT-OR-IGNOREs on that id, so the second call is a no-op that leaves
+the original record (including its original `created_at`) untouched.
+
+**Explicit development/holdout semantics** (`app/oos/access.py`):
+`get_development_bars()` reads the development window, unrestricted.
+`get_holdout_bars()` reads the holdout window but requires
+`confirm_oos_validation_use=True` to be passed explicitly — the default
+(`False`, and the corresponding `GET .../holdout/bars` HTTP route's
+default) raises `HoldoutAccessError` (403 over HTTP). No OOS-validation
+operation exists yet to set that flag from — it is the seam a future one
+will call through.
+
+**API:**
+
+```
+POST /oos/partitions                          create (idempotently) a partition
+GET  /oos/partitions                           list, optionally filtered by symbol/timeframe/provider
+GET  /oos/partitions/{id}                      one partition
+GET  /oos/partitions/{id}/development/bars     development-window bars (unrestricted)
+GET  /oos/partitions/{id}/holdout/bars          holdout-window bars (needs ?confirm_oos_validation_use=true)
+```
+
+**What is actually prevented vs. merely documented:**
+
+- Overlapping/touching ranges, invalid ordering (inverted development or
+  holdout window, development after holdout), and missing metadata (a
+  blank symbol/provider/timeframe or an absent field) — **technically
+  prevented**: a partition simply cannot be constructed in that shape,
+  by pydantic validators app/models/oos_partition.py runs on every
+  construction path.
+- A single call mixing development and holdout bars — **technically
+  prevented** for any caller going through `app/oos/access.py`:
+  `get_development_bars()`/`get_holdout_bars()` each query only their
+  own window.
+- Accidental holdout access (the default, argument-free call) —
+  **technically prevented**: `get_holdout_bars()` without
+  `confirm_oos_validation_use=True` raises immediately, matched by the
+  HTTP route's 403. This is a deliberateness guard, not access control —
+  any caller that deliberately passes `confirm_oos_validation_use=True`
+  outside a real future OOS-validation operation is not stopped by
+  anything in this codebase; Python has no mechanism that could enforce
+  who is allowed to set a boolean.
+- A holdout window that includes development bars — **structurally
+  impossible by construction**: since `holdout_start` must be strictly
+  after `development_end`, no timestamp inside `[development_start,
+  development_end]` can ever also fall inside `[holdout_start,
+  holdout_end]`.
+- A Research experiment, a Feature Engine computation, a Backtest, or a
+  Statistical Validation run being created against a range that
+  overlaps or falls entirely inside a holdout window — **NOT
+  technically prevented today**. `app/oos/partition.py::
+  require_development_range()` exists as the ready-to-wire guard for
+  this, but nothing in `app/api/research.py`, `app/api/features.py`,
+  `app/api/backtesting.py`, or `app/statistical_validation/` calls it
+  yet — those engines have no notion of an `OOSPartition` at all, by
+  this feature's own explicit scope (it must not modify their
+  behavior). A developer can still create a Research experiment whose
+  date range lands inside a holdout window; nothing in the codebase
+  stops that yet.
+- A caller bypassing `app/oos/access.py` entirely and calling
+  `app/storage/historical_bar_repository.py` directly with a range that
+  spans both windows — **NOT technically prevented**, since the
+  repository itself has no notion of partitions.
+
+**Tests:** `tests/test_oos_partition_model.py`,
+`tests/test_oos_partition_logic.py`,
+`tests/test_oos_partition_repository.py`,
+`tests/test_oos_partitions_api.py` (41 tests) — valid partition
+construction, overlapping/touching/inverted ranges rejected, boundary
+timestamps (exact-touch rejected, one-microsecond-clear accepted),
+deterministic id (same inputs → same id, case/offset-insensitive,
+different inputs → different id), metadata persistence/round-trip,
+idempotent re-save, range classification and the development-only
+guard, and both segment-bar-access functions (including the holdout
+confirmation gate, at both the function and HTTP-route level).
+
+## 21. Experiment Freeze & Provenance v1
+
+A Research Experiment (§15) gains a SECOND, independent lifecycle axis
+on top of its existing run status (draft/running/completed/failed,
+unchanged): `lifecycle_state` — **DRAFT → FROZEN → OOS_EVALUATED →
+ARCHIVED** (`FROZEN → ARCHIVED` also allowed directly). Freezing commits
+an experiment's hypothesis definition — after that point, its research
+meaning can never change. Deliberately does **not** implement OOS
+statistical testing or strategy optimization — this is the lifecycle
+and provenance foundation those would be built on.
+
+**Lifecycle** (`app/research/lifecycle.py::validate_transition()`, the
+one place the state table is enforced): `DRAFT→FROZEN`,
+`FROZEN→OOS_EVALUATED`, `FROZEN→ARCHIVED`, `OOS_EVALUATED→ARCHIVED`.
+Every other transition (including anything out of `ARCHIVED`, or
+`DRAFT` to anything but `FROZEN`) raises
+`InvalidLifecycleTransitionError` (409 over HTTP).
+`FROZEN→OOS_EVALUATED` is infrastructure only —
+`research_repository.mark_oos_evaluated()` exists and is tested
+directly, but no HTTP route calls it, since the actual OOS-evaluation
+operation is a future feature.
+
+**Freeze semantics:** freezing (`POST /research/experiments/{id}/freeze`)
+computes a deterministic `hypothesis_hash` and persists an immutable
+`ExperimentFreezeSnapshot` — a value copy of the experiment's
+research-defining fields at that instant (symbol/timeframe/provider/
+start_date/end_date/feature_contract_version/conditions/outcome), not
+a live reference — in the SAME operation as the lifecycle-state write.
+Nothing added by this feature can mutate a research-defining field
+after freezing: there has never been a generic "edit experiment"
+endpoint in this codebase, and the one new pre-freeze-mutable field
+this feature adds (`oos_partition_id`, see below) is rejected with a
+409 the instant `lifecycle_state` leaves `DRAFT` — enforced twice
+(the API route, and independently in `research_repository.set_oos_partition()`'s
+own `WHERE lifecycle_state = 'draft'`).
+
+**Provenance hash** (`app/research/lifecycle.py::compute_hypothesis_hash()`):
+SHA-256 of a canonical JSON encoding of exactly the fields that define
+research meaning — symbol, timeframe, provider, development date
+range, feature contract version, conditions, and outcome. Deterministic
+and ordering-independent (`conditions` is sorted before hashing, so an
+AND-combined set hashes identically regardless of the order it was
+written in) and stable across equivalent representations
+(`json.dumps(sort_keys=True)`). Excludes `id`/`created_at`
+(database-generated/timestamps), `name`/`hypothesis` (free-text
+metadata), and `oos_partition_id` (which partition is *reserved* for
+evaluation is not part of what the hypothesis *is*).
+
+**OOS partition linkage** (`app/oos/` itself is unmodified — this
+reuses `app.oos.partition.classify_range()` as-is): a DRAFT experiment
+may associate an OOS partition
+(`POST /research/experiments/{id}/oos-partition`); both that route and
+freezing itself validate symbol/timeframe/provider compatibility and
+that the experiment's ENTIRE date range falls inside the partition's
+development window (which, by `classify_range()`'s own construction,
+also rejects any range touching the holdout window at all) — a
+mismatch on either check is a 400, a partition that doesn't exist is a
+404.
+
+**API:**
+
+```
+POST /research/experiments/{id}/oos-partition   associate a DRAFT experiment with a partition
+POST /research/experiments/{id}/freeze           DRAFT -> FROZEN
+GET  /research/experiments/{id}/frozen           the immutable freeze snapshot
+GET  /research/experiments/{id}/provenance       symbol/timeframe/provider/dates/conditions/outcome/
+                                                  feature contract/reserved partition, in one response
+POST /research/experiments/{id}/archive          FROZEN|OOS_EVALUATED -> ARCHIVED
+```
+
+**Gotcha:** `Experiment.start_date`/`end_date` are calendar dates;
+`OOSPartition` boundaries are full timestamps. A same-day experiment
+end_date is treated as spanning the WHOLE day (`23:59:59.999999` UTC)
+for containment purposes — a partition's `development_end` set to
+literal midnight of that day (`T00:00:00Z`) will reject it as
+"touching the boundary"; set it to end-of-day instead.
+
+**Tests:** `tests/test_experiment_lifecycle.py`,
+`tests/test_experiment_freeze_repository.py`,
+`tests/test_experiment_freeze_api.py` (72 tests) — every valid/invalid
+transition, hash determinism/ordering-independence/exclusions and that
+it changes with every research-defining field, partition-linkage
+compatibility and containment/holdout-leakage rejection, snapshot
+persistence surviving the live row moving on to ARCHIVED, provenance
+retrieval, and the full HTTP flow including 409s for invalid
+transitions and post-freeze mutation attempts.
+
+## 22. OOS Evaluation v1
+
+The actual OOS-evaluation operation §20/§21 were both built toward:
+given a FROZEN (or already OOS_EVALUATED, for a re-run) experiment
+linked to an OOS partition, runs its frozen hypothesis against the
+partition's **holdout** data and persists an immutable, append-only
+result. Orchestrates the existing Feature Engine, Research condition
+evaluation, and Backtesting v1 engine — reuses all three UNMODIFIED,
+never a second implementation of any of them.
+
+**Pipeline** (`app/oos_evaluation/engine.py::evaluate_oos()`): load the
+live Experiment (lifecycle_state only) + the immutable
+`ExperimentFreezeSnapshot` (everything research-defining comes from
+here, never the mutable row) → load the linked `OOSPartition` and
+re-validate symbol/timeframe/provider/containment against the
+snapshot's own fields → read a bounded DEVELOPMENT warm-up range →
+read holdout bars via `app.oos.access.get_holdout_bars(...,
+confirm_oos_validation_use=True)` — **the sole holdout access path** →
+compute features (`app.features.engine.compute_features()`,
+unmodified) over warm-up + holdout bars together, then discard every
+record computed at a warm-up bar → run
+`app.backtesting.engine.run_backtest()` (unmodified) with `bars` =
+holdout bars ONLY and a single window converted from the frozen
+Outcome's own `horizon_minutes` → wrap the result into an
+`OOSEvaluationResult` + `OOSSignal` rows.
+
+**Warm-up handling:** the Feature Engine emits one FeatureRecord per
+bar it's given, walking backward through its own fixed per-feature
+window (ATR 14+1, realized volatility 20+1, SMA50 50, the largest
+return horizon converted to bars — `app/oos_evaluation/warmup.py`,
+reusing these as PUBLISHED constants from the Feature Engine itself,
+never re-derived). Warm-up bars are read from a bounded, calendar-time-
+buffered range strictly BEFORE `holdout_start` **and clamped to never
+exceed the partition's own `development_end`** (audit finding,
+2026-08-18 — see below), floored at `development_start`, and
+concatenated ahead of the holdout bars ONLY for this feature-
+computation call — the resulting records at warm-up-bar timestamps are
+then thrown away before condition evaluation or backtesting ever runs,
+so a development bar can structurally never become a signal/entry/
+outcome observation. `volatility_ratio`/`volatility_percentile` need up
+to 252 TRADING SESSIONS of history — deliberately NOT warmed up (that
+would violate "minimum required context" far more than it would help);
+those two features may legitimately read `None` for a while into the
+holdout period, the Feature Engine's own existing, unmodified behavior.
+
+**OOS Evaluation V1 Audit (2026-08-18):** an adversarial audit found
+one genuine (non-holdout-leaking) defect — a partition's own validator
+only requires `development_end < holdout_start`, not adjacency, so a
+partition MAY declare a gap between the two (e.g. to wall off a known
+data-quality window). Before the fix, warm-up's read range was bounded
+only by `holdout_start`, so it could read bars from that undeclared gap
+instead of the partition's own declared development window — confirmed
+by construction (a partition with a 22-day gap, real bars seeded only
+in the gap, still fully warmed up a 50-bar SMA50 feature at the first
+holdout bar). Not a holdout leak (gap bars are still strictly
+pre-holdout, so no future information was ever used), but a violation
+of "use the minimum required DEVELOPMENT context". Fixed by also
+clamping the warm-up range's end to `development_end`
+(`app/oos_evaluation/warmup.py::warmup_range()`) — a no-op for every
+adjacent partition (the common case, including every example partition
+elsewhere in this codebase). Every other audited property — sole
+holdout access path, no fetch-then-slice, no writes anywhere in the
+pipeline, boundary conditions (final-holdout-bar signals, insufficient
+future bars, outcomes exactly at/never beyond `holdout_end`), immunity
+to a tampered live Experiment row (conditions/symbol/timeframe/feature
+contract/outcome threshold/horizon), provenance independence,
+deterministic re-runs, and failure safety (a pipeline failure never
+reaches `OOS_EVALUATED`, never persists partial signals, and a
+subsequent success still works) — held up under adversarial testing
+with no further defects found. See `tests/test_oos_evaluation_audit.py`.
+
+**Anti-leakage:** `get_holdout_bars(..., confirm_oos_validation_use=True)`
+is the only function anywhere in this pipeline that reads the
+experiment's own symbol's bars at or after `holdout_start` — no
+"fetch everything, slice later" step exists. `run_backtest()`'s `bars`
+argument is always holdout bars alone, so a signal, an entry, or an
+outcome window can never reference a development-side bar.
+
+**API** (request body is completely ignored — every research-defining
+fact comes from the frozen snapshot and linked partition, never the
+caller):
+
+```
+POST /research/experiments/{id}/oos-evaluate            run (or re-run) the evaluation
+GET  /research/experiments/{id}/oos-evaluations          every evaluation ever run for this experiment
+GET  /research/oos-evaluations/{evaluation_id}            one evaluation
+GET  /research/oos-evaluations/{evaluation_id}/signals    its individual OOS signals
+```
+
+**Persistence:** append-only `oos_evaluations`/`oos_evaluation_signals`
+tables — re-running the SAME frozen experiment creates a brand-new
+evaluation row (random id, like `experiments.id`, not a deterministic
+hash like `oos_partitions.id`) with identical analytical results,
+never replacing a prior evaluation. A pipeline-stage failure (as
+opposed to a precondition rejection) is itself persisted as a `FAILED`
+result with `error_message` set, and does **not** advance the
+lifecycle — `FROZEN → OOS_EVALUATED` only happens on a `COMPLETED`
+result, and only when the experiment was still exactly `FROZEN` going
+into the call (a re-run of an already-`OOS_EVALUATED` experiment
+leaves the lifecycle untouched).
+
+**Real-data validation:** `scripts/run_oos_evaluation.py --demo` seeds
+a deterministic, seeded random-walk synthetic dataset (no live
+provider access in this environment), freezes a single, un-optimized
+condition (`price.return_15m <= -0.5%` → 30-minute forward return), and
+runs the full pipeline against it — a genuine, non-cherry-picked system
+validation run, not a strategy search.
+
+**Tests:** `tests/test_oos_evaluation_warmup.py`,
+`tests/test_oos_evaluation_engine.py`,
+`tests/test_oos_evaluation_repository.py`,
+`tests/test_oos_evaluation_api.py`,
+`tests/test_oos_evaluation_audit.py` (57 tests) — DRAFT/ARCHIVED
+rejection, missing/incomplete/incompatible partition linkage rejection,
+the holdout-authorization gate, a development-only condition never
+producing a signal even though the Feature Engine's own warm-up
+computation genuinely satisfies it there, every signal/entry/outcome
+falling strictly within the holdout window, an early signal's values
+provably unaffected by a change far later in holdout, deterministic
+re-runs, append-only persistence, and the full HTTP flow including the
+adversarial-request-body-is-ignored proof.
+
 ## Known limitations
 
 - `npm audit` flags a moderate/high `esbuild` advisory (bundled by Vite
@@ -744,3 +1081,13 @@ error-handling guarantees as V1.
 - The frontend's `normalCdf` (rational approximation) and the backend's
   (`math.erf`, exact) can differ by ≤1.5×10⁻⁷ — invisible at the UI's
   displayed precision.
+- OOS Evaluation v1's feature warm-up (§22) deliberately does NOT
+  extend far enough to guarantee `volatility_ratio`/
+  `volatility_percentile` are non-`None` at the start of a holdout
+  period (they need up to 252 trading sessions of history — warming
+  that much up for every evaluation would violate "minimum required
+  context" far more than it would help). A condition referencing
+  either feature may simply find fewer eligible signals near the start
+  of holdout as a result — the Feature Engine's own existing
+  "insufficient history" behavior, not a bug specific to OOS
+  Evaluation.

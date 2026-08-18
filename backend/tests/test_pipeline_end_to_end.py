@@ -282,12 +282,16 @@ class TestRawStorage:
 
         # sqlite_sequence is SQLite's own AUTOINCREMENT bookkeeping
         # table, not application data. experiments/experiment_events
-        # (Research v1), historical_features (Feature Engine v1), and
-        # backtests/backtest_signals (Backtesting v1) are all defined in
-        # the same schema file (app/storage/db.py) as everything else
-        # here -- get_connection() creates the whole schema in one
-        # executescript() call, so any table it knows about shows up the
-        # moment a connection is opened, not just the ones this
+        # (Research v1), historical_features (Feature Engine v1),
+        # backtests/backtest_signals (Backtesting v1), oos_partitions
+        # (OOS / Holdout Partition Framework v1, v0.1.29),
+        # experiment_freeze_snapshots (Experiment Freeze & Provenance
+        # v1, v0.1.30), and oos_evaluations/oos_evaluation_signals (OOS
+        # Evaluation v1, v0.1.31) are all defined in the same schema
+        # file (app/storage/db.py) as everything else here --
+        # get_connection() creates the whole schema in one
+        # executescript() call, so any table it knows about shows up
+        # the moment a connection is opened, not just the ones this
         # particular pipeline test exercises.
         assert tables - {"sqlite_sequence"} == {
             "historical_bars",
@@ -298,6 +302,10 @@ class TestRawStorage:
             "historical_features",
             "backtests",
             "backtest_signals",
+            "oos_partitions",
+            "experiment_freeze_snapshots",
+            "oos_evaluations",
+            "oos_evaluation_signals",
         }
 
     def test_raw_ingestion_row_exists_for_tsla_after_fetch(self, pipeline_result):

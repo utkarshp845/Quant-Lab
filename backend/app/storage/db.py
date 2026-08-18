@@ -4,7 +4,12 @@ table added v0.1.19; Research v1's experiments/experiment_events tables
 added v0.1.20; Feature Engine v1's historical_features table added
 v0.1.21; experiments/experiment_events reshaped for feature-based
 conditions, v0.1.24; Backtesting v1's backtests/backtest_signals tables
-added v0.1.25).
+added v0.1.25; OOS / Holdout Partition Framework v1's oos_partitions
+table added v0.1.29; Experiment Freeze & Provenance v1's
+experiment_freeze_snapshots table, and experiments' lifecycle_state/
+oos_partition_id/hypothesis_hash/frozen_at/archived_at columns, added
+v0.1.30; OOS Evaluation v1's oos_evaluations/oos_evaluation_signals
+tables added v0.1.31).
 
 Why SQLite, specifically: this is a local, single-user, no-auth
 educational tool (see README section 1) -- a server-based RDBMS
@@ -160,6 +165,22 @@ CREATE INDEX IF NOT EXISTS idx_raw_ingestions_lookup
 -- (every pre-v0.1.24 Condition was always a "{N}m_return" trailing
 -- return, which maps losslessly onto the new "price.return_{N}m"
 -- feature_id -- not a guess).
+-- v0.1.30 (Experiment Freeze & Provenance v1): lifecycle_state/
+-- oos_partition_id/hypothesis_hash/frozen_at/archived_at added --
+-- a SECOND, independent lifecycle axis alongside `status` above (see
+-- app/models/research.py::ExperimentLifecycleState's own docstring for
+-- why these are separate, not a replacement). `lifecycle_state`
+-- defaults to 'draft' so every experiment ever created (including
+-- every one that predates this version, via the ALTER TABLE migration
+-- below) starts, and stays, exactly as unaffected as before unless
+-- someone explicitly freezes it. `hypothesis_hash`/`frozen_at` are
+-- NULL until that freeze happens; `oos_partition_id` may be set any
+-- time while still 'draft' (see app/api/experiment_freeze.py's
+-- associate-partition route) and becomes immutable the same instant
+-- freezing does. See experiment_freeze_snapshots below for the actual
+-- immutable, point-in-time snapshot -- these five columns describe
+-- the LIVE experiment row's current lifecycle position, not a
+-- substitute for that snapshot.
 CREATE TABLE IF NOT EXISTS experiments (
     id TEXT PRIMARY KEY,
     name TEXT NOT NULL,
@@ -176,7 +197,12 @@ CREATE TABLE IF NOT EXISTS experiments (
     created_at TEXT NOT NULL,
     completed_at TEXT,
     results_json TEXT,
-    error_message TEXT
+    error_message TEXT,
+    lifecycle_state TEXT NOT NULL DEFAULT 'draft',
+    oos_partition_id TEXT,
+    hypothesis_hash TEXT,
+    frozen_at TEXT,
+    archived_at TEXT
 );
 
 -- One row per QUALIFYING SIGNAL a run of an experiment found -- see
@@ -366,6 +392,151 @@ CREATE TABLE IF NOT EXISTS backtest_signals (
 );
 CREATE INDEX IF NOT EXISTS idx_backtest_signals_backtest
     ON backtest_signals (backtest_id, signal_timestamp);
+
+-- OOS / Holdout Partition Framework v1 (app/models/oos_partition.py,
+-- app/oos/, app/storage/oos_partition_repository.py,
+-- app/api/oos_partitions.py): one row per PARTITION DEFINITION -- a
+-- declaration that an existing symbol/timeframe/provider's already-
+-- stored `historical_bars` rows are split into a development window
+-- and a later, non-overlapping holdout window. No OHLCV data is
+-- duplicated onto this table; development_start/development_end/
+-- holdout_start/holdout_end are only date-range REFERENCES a reader
+-- (app/oos/access.py) applies to `historical_bars` at query time.
+--
+-- `id` is a DETERMINISTIC hash of provider/symbol/timeframe/the four
+-- boundary timestamps (see app/models/oos_partition.py::
+-- compute_partition_id()) -- NOT a random uuid4 like `experiments.id`/
+-- `backtests.id` -- so creating "the same partition" twice always
+-- produces the same primary key, and the UNIQUE-by-PRIMARY-KEY INSERT
+-- OR IGNORE in oos_partition_repository.save_partition() makes that
+-- idempotent rather than a duplicate row (requirement 5,
+-- determinism). Every column here is set once, at creation, and never
+-- updated -- there is no "edit a partition" operation (see
+-- OOSPartition's own docstring for why a mutable boundary would defeat
+-- the point of drawing one).
+CREATE TABLE IF NOT EXISTS oos_partitions (
+    id TEXT PRIMARY KEY,
+    symbol TEXT NOT NULL,
+    timeframe TEXT NOT NULL,
+    provider TEXT NOT NULL,
+    development_start TEXT NOT NULL,
+    development_end TEXT NOT NULL,
+    holdout_start TEXT NOT NULL,
+    holdout_end TEXT NOT NULL,
+    label TEXT,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_oos_partitions_lookup
+    ON oos_partitions (symbol, timeframe, provider);
+
+-- Experiment Freeze & Provenance v1 (app/models/experiment_freeze.py,
+-- app/research/lifecycle.py, app/storage/
+-- experiment_freeze_repository.py, app/api/experiment_freeze.py): one
+-- row per EXPERIMENT THAT HAS BEEN FROZEN, ever -- `experiment_id` is
+-- the PRIMARY KEY, not an autoincrement id, because there is no
+-- re-freeze operation (freezing is one-way, requirement 1's state
+-- machine) and therefore never more than one snapshot per experiment.
+-- Every column here is a COPY of the frozen experiment's own field
+-- values at the instant of freezing -- not a foreign key back to
+-- `experiments` for anything except the id itself -- so this row
+-- answers "what hypothesis was evaluated" correctly even in the
+-- hypothetical case that the live `experiments` row were ever changed
+-- or deleted after the freeze (requirement 5: "do not rely solely on
+-- the current mutable Experiment row"). `hypothesis_hash` is the
+-- deterministic provenance hash (requirement 4) computed from exactly
+-- the columns below that define research meaning -- NOT
+-- name/hypothesis (free text) and NOT oos_partition_id (see
+-- app/research/lifecycle.py::canonicalize_hypothesis()'s own
+-- docstring for the full list and why each exclusion is deliberate).
+CREATE TABLE IF NOT EXISTS experiment_freeze_snapshots (
+    experiment_id TEXT PRIMARY KEY,
+    hypothesis_hash TEXT NOT NULL,
+    name TEXT NOT NULL,
+    hypothesis TEXT NOT NULL,
+    symbol TEXT NOT NULL,
+    timeframe TEXT NOT NULL,
+    provider TEXT NOT NULL,
+    start_date TEXT NOT NULL,
+    end_date TEXT NOT NULL,
+    feature_contract_version TEXT NOT NULL,
+    conditions_json TEXT NOT NULL,
+    outcome_json TEXT NOT NULL,
+    oos_partition_id TEXT,
+    experiment_created_at TEXT NOT NULL,
+    frozen_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_experiment_freeze_snapshots_hash
+    ON experiment_freeze_snapshots (hypothesis_hash);
+
+-- OOS Evaluation v1 (app/models/oos_evaluation.py, app/oos_evaluation/,
+-- app/storage/oos_evaluation_repository.py, app/api/oos_evaluation.py):
+-- one row per RUN of a frozen experiment's hypothesis against its
+-- linked OOS partition's holdout data. `id` is a random id (like
+-- `experiments.id`/`backtests.id`, NOT a deterministic hash like
+-- `oos_partitions.id`) precisely because running the SAME frozen
+-- experiment twice must produce TWO rows, not one -- this table is
+-- APPEND-ONLY: there is no UPDATE, no REPLACE, and no DELETE anywhere
+-- in app/storage/oos_evaluation_repository.py. Every column here is a
+-- copy of a fact already fixed at freeze time (hypothesis_hash,
+-- frozen_snapshot_id which equals the frozen experiment's own id,
+-- feature_contract_version, symbol/timeframe/provider) or fixed at
+-- partition-creation time (oos_partition_id, holdout_start/
+-- holdout_end) -- so this row answers "what was evaluated" without
+-- ever joining back to the live, mutable `experiments` row.
+-- results_json is NULL for a FAILED evaluation (status distinguishes
+-- "zero signals found, a legitimate result" from "the pipeline itself
+-- raised" -- see app/models/oos_evaluation.py::OOSEvaluationStatus).
+CREATE TABLE IF NOT EXISTS oos_evaluations (
+    id TEXT PRIMARY KEY,
+    experiment_id TEXT NOT NULL,
+    hypothesis_hash TEXT NOT NULL,
+    frozen_snapshot_id TEXT NOT NULL,
+    oos_partition_id TEXT NOT NULL,
+    symbol TEXT NOT NULL,
+    timeframe TEXT NOT NULL,
+    provider TEXT NOT NULL,
+    holdout_start TEXT NOT NULL,
+    holdout_end TEXT NOT NULL,
+    feature_contract_version TEXT NOT NULL,
+    outcome_horizon_minutes INTEGER NOT NULL,
+    outcome_window_bars INTEGER,
+    signal_count INTEGER NOT NULL,
+    results_json TEXT,
+    status TEXT NOT NULL,
+    error_message TEXT,
+    frozen_at TEXT NOT NULL,
+    evaluated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_oos_evaluations_experiment
+    ON oos_evaluations (experiment_id, evaluated_at);
+CREATE INDEX IF NOT EXISTS idx_oos_evaluations_hash
+    ON oos_evaluations (hypothesis_hash);
+
+-- One row per individual, ENTERABLE OOS signal a run of
+-- oos_evaluations found -- the SAME "do not only store aggregate
+-- statistics" requirement app/storage/db.py's own
+-- experiment_events/backtest_signals tables already apply, extended
+-- here. Also append-only: an evaluation's signals are inserted once,
+-- alongside its parent oos_evaluations row, and never touched again --
+-- there is no re-run-in-place for an OOS evaluation (see
+-- oos_evaluations' own comment above), so unlike
+-- experiment_events/backtest_signals (which DELETE-and-replace on
+-- every re-run of the SAME experiment/backtest id), a re-run here
+-- simply produces an entirely new evaluation_id with its own, separate
+-- signal rows.
+CREATE TABLE IF NOT EXISTS oos_evaluation_signals (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    evaluation_id TEXT NOT NULL,
+    symbol TEXT NOT NULL,
+    timeframe TEXT NOT NULL,
+    signal_timestamp TEXT NOT NULL,
+    entry_timestamp TEXT NOT NULL,
+    entry_price REAL NOT NULL,
+    feature_values_json TEXT NOT NULL,
+    outcomes_json TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_oos_evaluation_signals_evaluation
+    ON oos_evaluation_signals (evaluation_id, signal_timestamp);
 """
 
 # v0.1.18: columns added to an already-shipped table, so CREATE TABLE IF
@@ -406,6 +577,16 @@ _EXPERIMENTS_MIGRATIONS: list[tuple[str, str]] = [
         "feature_contract_version",
         f"ALTER TABLE experiments ADD COLUMN feature_contract_version TEXT NOT NULL DEFAULT '{FEATURE_CONTRACT_VERSION}'",
     ),
+    # v0.1.30 (Experiment Freeze & Provenance v1): additive, matching
+    # every migration above -- an existing pre-v0.1.30 experiment
+    # starts 'draft' (unaffected, per lifecycle_state's own column
+    # comment on the CREATE TABLE above) with every other new column
+    # NULL until explicitly frozen.
+    ("lifecycle_state", "ALTER TABLE experiments ADD COLUMN lifecycle_state TEXT NOT NULL DEFAULT 'draft'"),
+    ("oos_partition_id", "ALTER TABLE experiments ADD COLUMN oos_partition_id TEXT"),
+    ("hypothesis_hash", "ALTER TABLE experiments ADD COLUMN hypothesis_hash TEXT"),
+    ("frozen_at", "ALTER TABLE experiments ADD COLUMN frozen_at TEXT"),
+    ("archived_at", "ALTER TABLE experiments ADD COLUMN archived_at TEXT"),
 ]
 
 # v0.1.24: `condition_values_json` added nullable -- unlike
@@ -480,12 +661,19 @@ def _drop_legacy_not_null_columns(conn: sqlite3.Connection) -> None:
 
     SQLite has no ALTER TABLE ... ALTER COLUMN / DROP NOT NULL -- this
     is SQLite's own documented procedure for a constraint change:
-    build the table in its current (v0.1.24) shape under a temporary
-    name, copy every row across, drop the old table, rename the new one
-    into place. Must run AFTER _migrate_legacy_experiment_conditions()
-    above -- it depends on every row's `conditions_json`/
-    `feature_contract_version` already being populated (the new
-    `experiments` table declares both NOT NULL). A no-op (checked via
+    build the table in its current shape under a temporary name, copy
+    every row across, drop the old table, rename the new one into
+    place. Must run AFTER _migrate_legacy_experiment_conditions() above
+    AND after _migrate_table(conn, "experiments", _EXPERIMENTS_MIGRATIONS)
+    -- it depends on every row's `conditions_json`/
+    `feature_contract_version`/`lifecycle_state` (v0.1.30) already being
+    populated by those two steps (the new `experiments` table declares
+    the first two NOT NULL, and the rebuild below carries
+    `lifecycle_state`/`oos_partition_id`/`hypothesis_hash`/`frozen_at`/
+    `archived_at` across too -- they already exist on the OLD-named
+    `experiments` table by the time this runs, added by the
+    ALTER TABLE calls in _EXPERIMENTS_MIGRATIONS just before, same as
+    `conditions_json` always has been). A no-op (checked via
     PRAGMA table_info, same guard as every migration in this file) on a
     database that's already been rebuilt once, or a brand-new one that
     was never in the old shape to begin with.
@@ -510,15 +698,22 @@ def _drop_legacy_not_null_columns(conn: sqlite3.Connection) -> None:
                 created_at TEXT NOT NULL,
                 completed_at TEXT,
                 results_json TEXT,
-                error_message TEXT
+                error_message TEXT,
+                lifecycle_state TEXT NOT NULL DEFAULT 'draft',
+                oos_partition_id TEXT,
+                hypothesis_hash TEXT,
+                frozen_at TEXT,
+                archived_at TEXT
             );
             INSERT INTO experiments_v0124
                 (id, name, hypothesis, symbol, start_date, end_date, timeframe, provider,
                  conditions_json, outcome_json, feature_contract_version, status, created_at,
-                 completed_at, results_json, error_message)
+                 completed_at, results_json, error_message, lifecycle_state, oos_partition_id,
+                 hypothesis_hash, frozen_at, archived_at)
             SELECT id, name, hypothesis, symbol, start_date, end_date, timeframe, provider,
                    conditions_json, outcome_json, feature_contract_version, status, created_at,
-                   completed_at, results_json, error_message
+                   completed_at, results_json, error_message, lifecycle_state, oos_partition_id,
+                   hypothesis_hash, frozen_at, archived_at
             FROM experiments;
             DROP TABLE experiments;
             ALTER TABLE experiments_v0124 RENAME TO experiments;
