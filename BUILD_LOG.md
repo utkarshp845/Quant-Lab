@@ -22,6 +22,68 @@ design decision, and what it explicitly did NOT do if that matters.
 
 ---
 
+## v0.1.25 — Backtesting v1 (2026-08-18)
+
+An event-based historical backtester layered on top of Research v1 and
+Feature Engine v1, without duplicating either: a `Backtest` selects an
+existing `Experiment` by id — its conditions (evaluated via the exact
+same `app/research/conditions.py::evaluate_feature_conditions()`
+Research itself uses, imported, not reimplemented) and already-persisted
+`FeatureRecord`s are what get walked, never redefined or recomputed.
+Answers exactly one question: "when this research condition occurred
+historically, what happened afterward?"
+
+The engine (`app/backtesting/engine.py::run_backtest()`) walks bars
+strictly oldest-first. A condition true at bar `t` (using bar `t`'s own
+already-computed feature values only) generates a signal but is never
+acted on at bar `t`'s own close — entry happens at bar `t+1`'s **open**,
+the first price genuinely available once the signal is fully known. A
+condition true on the dataset's last bar produces no signal at all (no
+next bar to enter at). For each of several configurable forward windows
+— bar counts, not minutes, since a Backtest already runs against a fixed
+timeframe and needs no unit conversion — defaulting to **5/15/30/60
+bars**, the engine computes forward return (close-to-close from entry),
+MFE (best paper gain from any bar's high), and MAE (worst paper drawdown
+from any bar's low); a window whose outcome bar falls outside the
+dataset is simply absent from that signal's outcomes, never fabricated,
+and a signal with zero measurable windows is not persisted at all.
+
+Every individual signal is persisted (`backtest_signals` — signal/entry
+timestamps, entry price, the feature values that fired, one outcome per
+measurable window), not just the aggregate (`GET
+/backtests/{id}/signals`) — `BacktestResults` aggregates per window
+(signal count, win rate — a win is `forward_return > 0` — mean/median/
+std-dev/best/worst return, mean MFE/MAE), `None` rather than a fabricated
+`0.0` for a window with too few or zero measurable signals.
+`feature_contract_version` is captured from the referenced Experiment at
+Backtest-creation time, the same reproducibility guarantee Experiment
+itself already makes; `POST /backtests/{id}/run` deletes and re-inserts
+signals on every run (re-running against an unchanged dataset always
+produces identical results, same convention as Research v1's own
+`replace_events()`).
+
+Deliberately does NOT implement (same discipline as Research v1's own
+scope statement): position sizing, a held book, or capital tracking over
+time, portfolio construction, parameter optimization, ML, live/paper
+trading, or advanced execution simulation (slippage, partial fills,
+spread cost) — Backtesting v1 measures what happened after a signal, it
+does not simulate an account.
+
+**Files:** `app/models/backtesting.py`, `app/backtesting/engine.py`,
+`app/backtesting/aggregation.py`, `app/storage/backtest_repository.py`,
+`app/api/backtesting.py`, `app/storage/db.py` (new `backtests`/
+`backtest_signals` tables), `app/main.py` (router mount).
+**Tests:** `tests/test_backtest_engine.py`, `test_backtest_aggregation.py`,
+`test_backtest_models.py`, `test_backtest_repository.py`,
+`test_backtest_api.py` (77 new tests — hand-verified forward-return/MFE/
+MAE arithmetic, next-bar-open entry, explicit no-look-ahead proofs
+(perturbing/truncating future bars never changes an earlier signal;
+last-bar condition produces no signal), chronological ordering,
+per-window aggregation incl. zero/one-signal None handling,
+feature-contract-version reproducibility, persistence round-trips, and
+the full create → run → inspect HTTP flow) — 813 passing at merge (was
+736; +1 pre-existing pipeline test updated for the two new tables).
+
 ## v0.1.24 — Feature ↔ Research integration (2026-08-18)
 
 Made the Feature Engine's own vocabulary the single source of truth

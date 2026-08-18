@@ -55,6 +55,17 @@ consumer) to read rather than recompute, and exposed as a canonical
 vocabulary Research's condition builder populates itself from. See
 [16. Feature Engine v1](#16-feature-engine-v1).
 
+**Backtesting v1** — select an existing Research experiment and walk its
+already-persisted bars/features strictly chronologically: when the
+experiment's conditions become true at bar `t`, enter at bar `t+1`'s
+open (never bar `t`'s own close) and measure forward return/MFE/MAE at
+several configurable bar-count horizons (5/15/30/60 by default). Every
+individual signal is persisted, fully inspectable, alongside aggregate
+statistics per horizon. Answers exactly one question — "when this
+research condition occurred historically, what happened afterward?" —
+still no simulated P&L, position sizing, or capital tracking. See
+[17. Backtesting v1](#17-backtesting-v1).
+
 ## 2. Install and run
 
 Backend (Python 3.11+; developed on 3.13):
@@ -79,7 +90,7 @@ in the gitignored `.dev/`). Backend: `http://localhost:8000` (Swagger UI
 at `/docs`). Frontend: `http://localhost:5173`, expects the backend at
 `:8000` (`frontend/src/api/client.ts`).
 
-Backend tests: `cd backend && ./venv/bin/pytest` — 736+ tests, all
+Backend tests: `cd backend && ./venv/bin/pytest` — 813+ tests, all
 against synthetic/mocked data, no live network calls or real credentials
 required.
 
@@ -182,27 +193,31 @@ historical-bar fetch/validate/quarantine/store/raw-audit, an opt-in
 unattended ingestion loop, a deep-range historical backfill script,
 Research v1 (hypothesis testing over feature-based, AND-combined
 conditions) integrated with Feature Engine v1 (deterministic feature
-computation exposed as a canonical vocabulary).
+computation exposed as a canonical vocabulary), and Backtesting v1
+(event-based historical walk over an existing Research experiment:
+next-bar-open entry, multi-horizon forward return/MFE/MAE, every signal
+persisted and inspectable).
 
 **Not implemented, deliberately:** machine learning, authentication/user
 accounts, portfolio management, historical **options** data (equity bars
 only), a market-wide scanner across live symbols, a trade journal,
-**strategy backtesting** (simulated P&L/position/capital over time —
-different from Research v1, which only measures whether a pattern held
-historically), model calibration tracking, signal generation, paper
-trading, and live execution. None of these is scheduled work — each is
-a real future possibility gated behind the one before it (a trade
-journal needs persistent storage of real outcomes before model
-calibration is even askable; calibration needs to hold up before signal
-generation is meaningful; signals need a paper-trading track record
-before live execution is ever a live discussion) — but this repo does
-not commit to a timeline for any of it. Automated buy/sell
-recommendations are **permanently** out of scope at every one of those
-phases, including any of them that does get built — the tool's job
-stays "here's what matches your criteria," never "buy this." Live
-execution of a real trade with real capital, if it is ever built, is
-never something this assistant performs on your behalf — that action
-stays yours, deliberately, one trade at a time.
+**simulated P&L/position sizing/capital tracking over time** (Backtesting
+v1 measures forward return/MFE/MAE per signal — it does not size a
+position, hold a book, or track capital across trades), model
+calibration tracking, signal generation, paper trading, and live
+execution. None of these is scheduled work — each is a real future
+possibility gated behind the one before it (a trade journal needs
+persistent storage of real outcomes before model calibration is even
+askable; calibration needs to hold up before signal generation is
+meaningful; signals need a paper-trading track record before live
+execution is ever a live discussion) — but this repo does not commit to
+a timeline for any of it. Automated buy/sell recommendations are
+**permanently** out of scope at every one of those phases, including any
+of them that does get built — the tool's job stays "here's what matches
+your criteria," never "buy this." Live execution of a real trade with
+real capital, if it is ever built, is never something this assistant
+performs on your behalf — that action stays yours, deliberately, one
+trade at a time.
 
 ## 7. Importing options data from CSV
 
@@ -327,18 +342,19 @@ every other ingestion path relies on.
 ## 10. What is intentionally NOT implemented yet
 
 See [6. What's implemented vs. not](#6-whats-implemented-vs-not) for the
-current summary. In more detail: Research v1 and Feature Engine v1
-(sections 19–20) measure and compute *inputs*, they do not simulate a
-trade — **strategy backtesting** (entry/exit, P&L, capital over time)
-still does not exist anywhere in this codebase. Historical **options**
-data, a live market-wide scanner, and a trade journal are also not
-implemented. Automated buy/sell recommendations are permanently out of
-scope, at every phase, including any future paper-trading or
-signal-generation work — the tool's job stays "these match your
-criteria," never "buy this." Live execution of a real trade is not
-planned and, regardless of what the codebase might someday support, this
-assistant will not place a real trade or move real capital on your
-behalf, ever.
+current summary. In more detail: Research v1, Feature Engine v1, and
+Backtesting v1 (sections 15–17) measure, compute, and walk forward over
+*inputs* — Backtesting v1 answers "what happened after this condition
+historically," not "what would my account balance be": simulated
+position sizing, a held book, and capital tracking over time still do
+not exist anywhere in this codebase. Historical **options** data, a live
+market-wide scanner, and a trade journal are also not implemented.
+Automated buy/sell recommendations are permanently out of scope, at
+every phase, including any future paper-trading or signal-generation
+work — the tool's job stays "these match your criteria," never "buy
+this." Live execution of a real trade is not planned and, regardless of
+what the codebase might someday support, this assistant will not place a
+real trade or move real capital on your behalf, ever.
 
 ## 11. Real-time streaming
 
@@ -367,7 +383,7 @@ consumers built on top of it.
 
 ## 13. Testing
 
-`cd backend && ./venv/bin/pytest` — 736+ deterministic tests, all against
+`cd backend && ./venv/bin/pytest` — 813+ deterministic tests, all against
 synthetic fixtures or mocked HTTP, no live provider credentials or
 network access required anywhere in the suite. Manual, opt-in scripts
 that DO hit real provider APIs with your own credentials
@@ -385,10 +401,11 @@ backend/
     calculations/          Pure math: bear put spread, probability distribution, Monte Carlo, stats
     ingestion/              CSV parsing + normalization + bar validation
     providers/               MarketDataProvider + Alpaca/Massive/Schwab/CSV implementations
-    storage/                 SQLite schema + one repository per table family (bars, raw, research, features)
+    storage/                 SQLite schema + one repository per table family (bars, raw, research, features, backtests)
     streaming/                 Reconnecting WebSocket streams + the per-(provider,symbol) hub
-    research/                   Research v1 -- pure condition/outcome engine (see section 19)
-    features/                   Feature Engine v1 -- pure feature computation (see section 20)
+    research/                   Research v1 -- pure condition/outcome engine (see section 15)
+    features/                   Feature Engine v1 -- pure feature computation (see section 16)
+    backtesting/                 Backtesting v1 -- pure chronological walk + aggregation (see section 17)
     api/                         One router per route group, mounted in main.py
   scripts/                Manual/opt-in real-API checks, Schwab OAuth bootstrap, dev.sh
   tests/                  One test file per module above, all deterministic/offline
@@ -510,6 +527,91 @@ calculation, insufficient-history/missing-bar/zero-denominator behavior,
 timestamp alignment, no-look-ahead, TSLA/NVDA market context, MCL
 exclusion unless configured, persistence/retrieval, and deterministic
 recomputation.
+
+## 17. Backtesting v1
+
+An event-based historical backtester that answers exactly one question:
+**"when this research condition occurred historically, what happened
+afterward?"** Built on top of Research v1 and Feature Engine v1 without
+duplicating either — a `Backtest` references an existing `Experiment`
+by id (`POST /backtests {"experiment_id": ...}`); its conditions and
+already-computed `FeatureRecord`s are read, never redefined or
+recomputed (`app/backtesting/engine.py` reuses
+`app/research/conditions.py::evaluate_feature_conditions()` verbatim).
+
+```
+experiments (existing, [15])            historical_bars + historical_features (existing, [16])
+        |                                          |
+        +---------------- app/backtesting/engine.py::run_backtest() ----------------+
+                                          |
+                          BacktestSignal[] (persisted, one per signal)
+                                          |
+                              BacktestResults (one per configured window)
+```
+
+**Chronological walk, no look-ahead:** bars are walked oldest-first.
+When conditions evaluate true at bar `t` (using bar `t`'s own,
+already-computed feature values only), a signal is generated but never
+acted on at bar `t`'s own close — entry happens at bar `t+1`'s **open**,
+the first price genuinely available once the condition is fully known.
+A condition true on the dataset's last bar produces no signal at all
+(there is no next bar to enter at). Forward-window outcomes are computed
+only from bars at or after the entry bar.
+
+**Multiple forward horizons per signal:** windows are configurable BAR
+counts (not minutes — a Backtest already runs against a fixed
+timeframe, so no unit conversion is needed), defaulting to **5, 15, 30,
+and 60 bars**. For each window that has enough forward bars remaining
+in the dataset, the engine computes:
+
+- **Forward return:** `(outcome_bar.close - entry_price) / entry_price`
+- **MFE** (Maximum Favorable Excursion): the best paper gain reached at
+  any point in the window, from every bar's `high`
+- **MAE** (Maximum Adverse Excursion): the worst paper drawdown reached
+  at any point in the window, from every bar's `low`
+
+A window whose outcome bar falls outside the queried dataset is simply
+absent from that signal's outcomes — never estimated or fabricated. A
+signal with zero measurable windows is not persisted at all.
+
+**Every individual signal is persisted** (`backtest_signals` — signal
+timestamp, entry timestamp, entry price, the observed feature values
+that fired, and one outcome per measurable window), not just the
+aggregate — `GET /backtests/{id}/signals` returns them all, so results
+stay fully inspectable. `POST /backtests/{id}/run` deletes and
+re-inserts events on every run (same reproducibility convention as
+Research v1) — re-running against an unchanged dataset always produces
+identical results. `feature_contract_version` is captured from the
+referenced Experiment at Backtest-creation time — the identical
+reproducibility guarantee Experiment itself already makes.
+
+**Aggregate results per window** (`BacktestWindowResults`): signal
+count, win count/rate (a win is `forward_return > 0` — Backtesting v1
+has no separate success threshold of its own), mean/median/std-dev
+return, best/worst return, and mean MFE/mean MAE — `None`, never a
+fabricated `0.0`, when a window has too few (or zero) measurable
+signals.
+
+Routes: `POST /backtests` (create, referencing an existing experiment),
+`GET /backtests` (list, optionally `?experiment_id=`), `GET .../{id}`
+(retrieve), `GET .../{id}/signals` (every individual signal),
+`POST .../{id}/run`.
+
+**Not implemented, on purpose (Backtesting v1's own scope, same
+discipline as Research v1):** position sizing, a held book, or capital
+tracking over time; portfolio construction; parameter optimization or
+ML; live/paper trading; advanced execution simulation (slippage,
+partial fills, spread cost). Backtesting v1 measures what happened
+after a signal — it does not simulate an account.
+
+**Tests:** `tests/test_backtest_*.py` (77 tests) — hand-verified
+forward-return/MFE/MAE arithmetic, next-bar-open entry (never the
+signal bar's own close), chronological execution, explicit no-look-ahead
+proofs (perturbing/truncating future bars never changes an earlier
+signal's computed fields; a condition true on the dataset's last bar
+produces no signal), per-window aggregation (including zero/one-signal
+None handling), feature-contract-version reproducibility, persistence
+round-trips, and the full create → run → inspect HTTP flow.
 
 ## Known limitations
 

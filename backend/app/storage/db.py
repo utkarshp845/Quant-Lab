@@ -3,7 +3,8 @@ validation metadata + quarantine table added v0.1.18; raw-ingestion
 table added v0.1.19; Research v1's experiments/experiment_events tables
 added v0.1.20; Feature Engine v1's historical_features table added
 v0.1.21; experiments/experiment_events reshaped for feature-based
-conditions, v0.1.24).
+conditions, v0.1.24; Backtesting v1's backtests/backtest_signals tables
+added v0.1.25).
 
 Why SQLite, specifically: this is a local, single-user, no-auth
 educational tool (see README section 1) -- a server-based RDBMS
@@ -299,6 +300,72 @@ CREATE TABLE IF NOT EXISTS historical_features (
 );
 CREATE INDEX IF NOT EXISTS idx_historical_features_lookup
     ON historical_features (symbol, timeframe, provider, timestamp);
+
+-- Backtesting v1 (app/backtesting/, app/api/backtesting.py, app/storage/
+-- backtest_repository.py): one row per BACKTEST RUN -- a Backtest
+-- always references an existing `experiments` row (experiment_id, no
+-- foreign-key constraint declared -- this app has none anywhere else
+-- either, e.g. experiment_events.experiment_id above; the API route is
+-- what enforces the reference actually exists, same as every other
+-- lookup in this app). symbol/timeframe/provider/feature_contract_version
+-- are copied from the referenced Experiment AT CREATION TIME (see
+-- app/models/backtesting.py::Backtest.new()) so a Backtest row is fully
+-- self-describing without a join back to `experiments` -- and, like
+-- `experiments` itself, immutable after creation except for
+-- status/completed_at/results_json/error_message, the identical
+-- reproducibility guarantee. windows_json is a JSON list[int] (bar
+-- counts, e.g. [5, 15, 30, 60]) -- the same "structured, per-row-sized
+-- data as JSON text" pattern experiments.conditions_json already uses,
+-- since the window count is caller-configurable, not fixed.
+CREATE TABLE IF NOT EXISTS backtests (
+    id TEXT PRIMARY KEY,
+    experiment_id TEXT NOT NULL,
+    symbol TEXT NOT NULL,
+    timeframe TEXT NOT NULL,
+    provider TEXT NOT NULL,
+    windows_json TEXT NOT NULL,
+    feature_contract_version TEXT NOT NULL,
+    status TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    completed_at TEXT,
+    results_json TEXT,
+    error_message TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_backtests_experiment
+    ON backtests (experiment_id);
+
+-- One row per individual, ENTERABLE signal a backtest run found -- see
+-- app/models/backtesting.py::BacktestSignal's own docstring for why
+-- aggregate statistics alone are never enough here either (the same
+-- "do not only store aggregate statistics" requirement Research v1
+-- already applies). Re-running a backtest (POST /backtests/{id}/run)
+-- DELETEs and replaces this backtest's rows rather than appending --
+-- see backtest_repository.replace_signals(), identical reasoning to
+-- experiment_events.replace_events() above: a backtest run is a
+-- reproducible computation over a fixed dataset, so only the latest
+-- run's signals are kept. feature_values_json (feature_id -> observed
+-- value) and outcomes_json (a list of one object per measured window --
+-- window_bars/outcome_timestamp/forward_return/mfe/mae) are both JSON:
+-- feature_values_json for the identical reason
+-- experiment_events.condition_values_json already is (a variable-shape
+-- map keyed by whichever feature_ids this backtest's conditions
+-- reference), and outcomes_json because a signal can have anywhere from
+-- one to len(windows) measured outcomes depending on how close it fell
+-- to the end of the dataset -- see BacktestSignal's own docstring.
+CREATE TABLE IF NOT EXISTS backtest_signals (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    backtest_id TEXT NOT NULL,
+    experiment_id TEXT NOT NULL,
+    symbol TEXT NOT NULL,
+    timeframe TEXT NOT NULL,
+    signal_timestamp TEXT NOT NULL,
+    entry_timestamp TEXT NOT NULL,
+    entry_price REAL NOT NULL,
+    feature_values_json TEXT NOT NULL,
+    outcomes_json TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_backtest_signals_backtest
+    ON backtest_signals (backtest_id, signal_timestamp);
 """
 
 # v0.1.18: columns added to an already-shipped table, so CREATE TABLE IF
