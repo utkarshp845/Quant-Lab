@@ -41,7 +41,30 @@ warm-up strictly for trailing-window context, evaluates the frozen
 condition, and runs Backtesting v1's own unmodified engine against it,
 persisting an append-only OOSEvaluationResult and advancing
 FROZEN -> OOS_EVALUATED on success (see app/oos_evaluation/,
-app/api/oos_evaluation.py) -- layered on top -- no brokerage
+app/api/oos_evaluation.py), and (OOS Evidence Accumulation V1,
+v0.1.33) lets an already-frozen experiment accumulate MORE THAN ONE
+independent OOS evaluation period over time -- registering additional,
+already-created OOS partitions as evaluation periods, running the SAME
+OOS Evaluation v1 pipeline against each one (reused unmodified) against
+the SAME immutable frozen snapshot, and a read-only aggregation across
+every completed period that keeps raw (possibly correlated) signal
+counts and truly-independent episode counts explicitly separate,
+computes no statistical significance claim of any kind, and never
+mutates the hypothesis, a prior evaluation, or development data (see
+app/oos_evidence/, app/api/oos_evidence.py), and (OOS Statistical
+Review V1, v0.1.34) a formal, READ-ONLY statistical review of that
+accumulated evidence -- episode-level (never raw-signal) conditioned
+observations, an OOS-scoped unconditional baseline built from the SAME
+holdout time ranges (never development data), both of Statistical
+Validation V2's dependence-aware baseline methods (reused unmodified),
+a pre-specified primary horizon (the frozen hypothesis' own, never
+horizon-searched), power/minimum-detectable-effect reporting, and a
+deterministic SUPPORTED/NOT_SUPPORTED/INCONCLUSIVE/INSUFFICIENT_DATA
+verdict that never equates a non-significant result with "false" or a
+significant one with "profitable" -- persisting only new, immutable
+review rows, never touching the hypothesis, a prior OOS evaluation, or
+any other evidence (see app/oos_statistical_review/, app/api/
+oos_statistical_review.py) -- layered on top -- no brokerage
 connectivity, no trade execution, no auth. See the README for the full
 list of assumptions and what is intentionally not implemented yet.
 """
@@ -65,7 +88,9 @@ from app.api.experiment_freeze import router as experiment_freeze_router
 from app.api.market_data import router as market_data_router
 from app.api.market_data_stream import router as market_data_stream_router
 from app.api.oos_evaluation import router as oos_evaluation_router
+from app.api.oos_evidence import router as oos_evidence_router
 from app.api.oos_partitions import router as oos_partitions_router
+from app.api.oos_statistical_review import router as oos_statistical_review_router
 from app.api.research import router as research_router
 from app.ingestion.auto_ingest import run_ingestion_loop
 
@@ -153,6 +178,8 @@ app.include_router(backtesting_router, prefix="/api")
 app.include_router(oos_partitions_router, prefix="/api")
 app.include_router(experiment_freeze_router, prefix="/api")
 app.include_router(oos_evaluation_router, prefix="/api")
+app.include_router(oos_evidence_router, prefix="/api")
+app.include_router(oos_statistical_review_router, prefix="/api")
 
 
 @app.get("/api/health")

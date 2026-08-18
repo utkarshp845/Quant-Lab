@@ -4,7 +4,20 @@ experiment linked to an OOS partition, runs its frozen hypothesis
 against the partition's HOLDOUT data and returns an OOSEvaluationResult
 + its OOSSignal rows. Persistence and the FROZEN -> OOS_EVALUATED
 lifecycle transition are NOT this module's job -- see
-app/api/oos_evaluation.py, the only caller.
+app/api/oos_evaluation.py, the only caller of evaluate_oos() below.
+
+OOS Evidence Accumulation V1 adds evaluate_oos_for_partition() (bottom
+of this file): the SAME pipeline (_run_pipeline_or_failed_result(),
+steps 3-7 below, entirely UNMODIFIED), against an explicitly given
+partition instead of the one fixed at freeze time -- so a frozen
+experiment can accumulate evidence from more than just its one
+originally-linked partition, still against the SAME immutable
+ExperimentFreezeSnapshot. app/oos_evidence/evaluation.py is that
+function's only caller (its own module docstring covers the additional
+"is this partition a registered period for this experiment, and has it
+already been evaluated" checks layered on top -- deliberately not this
+module's job, matching this module's own "orchestrate the pipeline,
+nothing about what may call it" scope).
 
 EXACT PIPELINE (frozen experiment -> holdout data -> features ->
 conditions -> backtest -> result):
@@ -201,15 +214,20 @@ class PartitionNotFoundForEvaluationError(OOSEvaluationError):
 _EVALUABLE_LIFECYCLE_STATES = frozenset({ExperimentLifecycleState.FROZEN, ExperimentLifecycleState.OOS_EVALUATED})
 
 
-def _check_preconditions(
+def _load_evaluable_snapshot(
     experiment_id: str, *, db_path: str | Path | None = None
-) -> tuple[Experiment, ExperimentFreezeSnapshot, OOSPartition]:
-    """Requirement 1, in full: raises a specific OOSEvaluationError
-    subclass (or app.research.lifecycle.PartitionLinkageError) for
-    every condition requirement 1 asks to reject, and returns the three
-    objects the rest of the pipeline needs once every precondition
-    holds. Nothing here reads a holdout bar -- this function runs
-    entirely before step 3 of the module docstring's pipeline."""
+) -> tuple[Experiment, ExperimentFreezeSnapshot]:
+    """The lifecycle/snapshot half of requirement 1's preconditions --
+    "experiment exists, lifecycle state is evaluable, a complete frozen
+    snapshot exists" -- factored out so it is shared VERBATIM by
+    _check_preconditions() below (evaluate_oos(), against the
+    snapshot's own frozen-time-linked partition) and
+    evaluate_oos_for_partition() (OOS Evidence Accumulation V1, against
+    an explicitly given, already-validated-as-a-registered-period
+    partition -- see app/oos_evidence/evaluation.py, the only caller of
+    that function). Both then go on to resolve THEIR OWN partition
+    differently; nothing about this half of the precondition check
+    differs between them."""
     experiment = research_repository.get_experiment(experiment_id, db_path=db_path)
     if experiment is None:
         raise ExperimentNotFoundForEvaluationError(f"No experiment with id {experiment_id!r}")
@@ -237,6 +255,19 @@ def _check_preconditions(
             f"Experiment {experiment_id!r} has no complete frozen provenance (missing snapshot or hypothesis_hash) "
             "-- cannot determine what to evaluate."
         )
+    return experiment, snapshot
+
+
+def _check_preconditions(
+    experiment_id: str, *, db_path: str | Path | None = None
+) -> tuple[Experiment, ExperimentFreezeSnapshot, OOSPartition]:
+    """Requirement 1, in full: raises a specific OOSEvaluationError
+    subclass (or app.research.lifecycle.PartitionLinkageError) for
+    every condition requirement 1 asks to reject, and returns the three
+    objects the rest of the pipeline needs once every precondition
+    holds. Nothing here reads a holdout bar -- this function runs
+    entirely before step 3 of the module docstring's pipeline."""
+    experiment, snapshot = _load_evaluable_snapshot(experiment_id, db_path=db_path)
 
     if snapshot.oos_partition_id is None:
         raise NoLinkedPartitionError(f"Experiment {experiment_id!r} has no linked OOS partition to evaluate against.")
@@ -367,34 +398,33 @@ def _run_pipeline(
     return result, signals
 
 
-def evaluate_oos(
-    experiment_id: str,
+def _run_pipeline_or_failed_result(
+    snapshot: ExperimentFreezeSnapshot,
+    partition: OOSPartition,
     *,
-    market_context_symbols: frozenset[str] | set[str] = frozenset(),
-    db_path: str | Path | None = None,
+    market_context_symbols: frozenset[str] | set[str],
+    db_path: str | Path | None,
 ) -> tuple[OOSEvaluationResult, list[OOSSignal]]:
-    """The single entry point: preconditions (requirement 1) are
-    checked FIRST and raise immediately (OOSEvaluationError or
-    PartitionLinkageError) -- app/api/oos_evaluation.py maps these to
-    4xx responses and persists NOTHING, since no holdout data was ever
-    touched.
+    """Runs _run_pipeline() (steps 3-7 of the module docstring) and
+    converts any exception it raises into a persisted FAILED
+    OOSEvaluationResult (status=FAILED, error_message=str(exc),
+    results=None, signal_count=0) with every identity/provenance field
+    this module already knows (experiment_id, hypothesis_hash,
+    frozen_snapshot_id, oos_partition_id, symbol/timeframe/provider,
+    holdout_start/end, feature_contract_version, frozen_at) still
+    populated -- requirement 7's "preserve the FROZEN state ... persist
+    an error/status record if appropriate", mirroring app/api/
+    research.py's/app/api/backtesting.py's own "a run failing is a
+    normal, persisted FAILED status, not a 500" convention exactly.
+    NEVER raises itself -- only a precondition check upstream of this
+    (in evaluate_oos() or evaluate_oos_for_partition()) does that.
 
-    Once preconditions pass, the actual pipeline (steps 3-7) runs
-    inside a try/except: an unexpected failure there is caught and
-    returned as a FAILED OOSEvaluationResult (status=FAILED,
-    error_message=str(exc), results=None, signal_count=0) with every
-    identity/provenance field this module already knows (experiment_id,
-    hypothesis_hash, frozen_snapshot_id, oos_partition_id, symbol/
-    timeframe/provider, holdout_start/end, feature_contract_version,
-    frozen_at) still populated -- requirement 7's "preserve the FROZEN
-    state ... persist an error/status record if appropriate", mirroring
-    app/api/research.py's/app/api/backtesting.py's own "a run failing
-    is a normal, persisted FAILED status, not a 500" convention exactly.
-    This function NEVER raises for a pipeline-stage failure -- only for
-    a precondition one.
-    """
-    _experiment, snapshot, partition = _check_preconditions(experiment_id, db_path=db_path)
-
+    Shared by evaluate_oos() (against the frozen snapshot's own
+    frozen-time-linked partition) and evaluate_oos_for_partition() (OOS
+    Evidence Accumulation V1, app/oos_evidence/evaluation.py, against
+    an explicitly given, already-validated partition) -- identical
+    failure handling either way, factored out once rather than
+    duplicated."""
     try:
         return _run_pipeline(snapshot, partition, market_context_symbols=market_context_symbols, db_path=db_path)
     except Exception as exc:  # noqa: BLE001 -- see this function's own docstring: a pipeline failure is a persisted FAILED result, not a re-raise
@@ -426,3 +456,81 @@ def evaluate_oos(
             evaluated_at=evaluated_at,
         )
         return failed_result, []
+
+
+def evaluate_oos(
+    experiment_id: str,
+    *,
+    market_context_symbols: frozenset[str] | set[str] = frozenset(),
+    db_path: str | Path | None = None,
+) -> tuple[OOSEvaluationResult, list[OOSSignal]]:
+    """The single entry point: preconditions (requirement 1) are
+    checked FIRST and raise immediately (OOSEvaluationError or
+    PartitionLinkageError) -- app/api/oos_evaluation.py maps these to
+    4xx responses and persists NOTHING, since no holdout data was ever
+    touched.
+
+    Once preconditions pass, the actual pipeline (steps 3-7) runs via
+    _run_pipeline_or_failed_result() -- see that function's own
+    docstring for exactly how a pipeline-stage failure there is turned
+    into a persisted FAILED result rather than propagating. This
+    function NEVER raises for a pipeline-stage failure -- only for a
+    precondition one.
+    """
+    _experiment, snapshot, partition = _check_preconditions(experiment_id, db_path=db_path)
+    return _run_pipeline_or_failed_result(
+        snapshot, partition, market_context_symbols=market_context_symbols, db_path=db_path
+    )
+
+
+def evaluate_oos_for_partition(
+    experiment_id: str,
+    oos_partition_id: str,
+    *,
+    market_context_symbols: frozenset[str] | set[str] = frozenset(),
+    db_path: str | Path | None = None,
+) -> tuple[OOSEvaluationResult, list[OOSSignal]]:
+    """OOS Evidence Accumulation V1's own entry point: runs the exact
+    SAME pipeline evaluate_oos() runs (_run_pipeline_or_failed_result(),
+    steps 3-7 of the module docstring, entirely UNMODIFIED, reused
+    verbatim) against an EXPLICITLY given `oos_partition_id` instead of
+    the one fixed at freeze time (`snapshot.oos_partition_id`) -- so a
+    frozen experiment can accumulate evidence from more than just its
+    one originally-linked partition, still against the SAME immutable
+    ExperimentFreezeSnapshot, never a second implementation of any of
+    the pipeline's own steps.
+
+    Preconditions checked here are the SAME KIND _check_preconditions()
+    above checks for evaluate_oos() -- experiment exists, lifecycle
+    state is evaluable (_load_evaluable_snapshot(), shared verbatim), a
+    complete frozen snapshot exists, the given partition exists, and
+    validate_snapshot_partition_linkage() passes (symbol/timeframe/
+    provider compatible AND the experiment's own development range is
+    entirely contained within `oos_partition_id`'s development window --
+    the identical structural check evaluate_oos() already applies to
+    its own linked partition, not a relaxed one) -- just resolved
+    against a CALLER-SUPPLIED partition id rather than
+    `snapshot.oos_partition_id`.
+
+    Deliberately does NOT check whether `oos_partition_id` was ever
+    "registered" as an OOS Evidence Accumulation period, or whether it
+    already has a COMPLETED evaluation -- those are app/oos_evidence/
+    evaluation.py::evaluate_oos_period()'s own, additional preconditions
+    (requirement 1's "previously evaluated OOS periods cannot be
+    evaluated again"), layered on top of this function, not inside it:
+    this function is deliberately as general as evaluate_oos() already
+    is -- "run the frozen pipeline against a given, already-
+    compatibility-validated partition" -- so it has exactly one job and
+    exactly one place that job is implemented.
+    """
+    _experiment, snapshot = _load_evaluable_snapshot(experiment_id, db_path=db_path)
+
+    partition = oos_partition_repository.get_partition(oos_partition_id, db_path=db_path)
+    if partition is None:
+        raise PartitionNotFoundForEvaluationError(f"No OOS partition with id {oos_partition_id!r}")
+
+    validate_snapshot_partition_linkage(snapshot, partition)  # raises PartitionLinkageError
+
+    return _run_pipeline_or_failed_result(
+        snapshot, partition, market_context_symbols=market_context_symbols, db_path=db_path
+    )

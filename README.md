@@ -435,6 +435,8 @@ backend/
     oos/                          OOS / Holdout Partition Framework v1 -- classification + access boundary (see section 20)
     research/lifecycle.py          Experiment Freeze & Provenance v1 -- transitions, hash, partition linkage (see section 21)
     oos_evaluation/                OOS Evaluation v1 -- warm-up + orchestration of the frozen hypothesis vs. holdout data (see section 22)
+    oos_evidence/                   OOS Evidence Accumulation V1 -- multi-period registration, evaluation, and aggregation (see section 23)
+    oos_statistical_review/          OOS Statistical Review V1 -- formal, read-only significance testing over accumulated OOS evidence (see section 24)
     api/                         One router per route group, mounted in main.py
   scripts/                Manual/opt-in real-API checks, Schwab OAuth bootstrap, dev.sh
   tests/                  One test file per module above, all deterministic/offline
@@ -1072,19 +1074,274 @@ provably unaffected by a change far later in holdout, deterministic
 re-runs, append-only persistence, and the full HTTP flow including the
 adversarial-request-body-is-ignored proof.
 
-**First real experiment (2026-08-18):** a full real-data run — real
-TSLA 5-minute bars from Alpaca, a hypothesis defined and frozen
-entirely from development-period evidence before any holdout contact,
-evaluated exactly once via `POST /research/experiments/{id}/oos-evaluate`
-with no request body. Verdict: **INCONCLUSIVE** (the development
-evidence was already statistically negligible once properly adjusted
-for signal clustering, and the 14-day holdout produced only 4
-independent episodes — too few for any independent conclusion). See
-`EXPERIMENTS.md` for the full record (exact hypothesis, thresholds,
-development statistics, frozen provenance, OOS statistics, comparison
-table, and integrity check) — kept as its own file rather than here
-because `backend/data/historical_bars.db`, where the real rows this
-describes actually live, is gitignored local data.
+## 23. OOS Evidence Accumulation V1
+
+Lets an already-**FROZEN** experiment accumulate **more than one**
+independent OOS evaluation period over time — registering additional,
+independently-created OOS partitions as evaluation periods, running
+§22's OOS Evaluation v1 pipeline against each one **unmodified**,
+always against the SAME immutable `ExperimentFreezeSnapshot` — without
+ever touching the hypothesis, a prior evaluation, or development data.
+No parameter optimization or hypothesis mutation capability exists
+anywhere in this feature.
+
+**Period registration** (`app/oos_evidence/period.py`): an "OOS
+period" is a LINK between a frozen experiment and an already-created,
+independent `OOSPartition` (via the existing, unmodified `POST
+/oos/partitions` — no new partition-creation path). Registering one
+validates, in two layers, both against the immutable snapshot, never
+the live `Experiment` row:
+
+1. `validate_snapshot_partition_linkage()` (§21, reused unmodified):
+   symbol/timeframe/provider compatible, and the experiment's own
+   development range entirely contained within the new partition's
+   development window — which structurally implies the new partition's
+   holdout starts strictly after the experiment's development range
+   ends (a partition's own `development_end < holdout_start` invariant
+   does the rest), so "occurs strictly after development" and "does
+   not overlap development" fall out for free rather than needing a
+   second, parallel check.
+2. `validate_new_period()` (this feature's own addition): the new
+   period's holdout window must not overlap or touch (inclusive check,
+   matching `OOSPartition`'s own "touching counts as overlapping" rule)
+   any OOS period already registered for this SAME experiment,
+   including the experiment's originally frozen-time-linked partition;
+   cross-partition contamination is rejected in both directions (a new
+   period's holdout reading through another period's development
+   window, or vice versa — two periods legitimately sharing the same
+   development-side warm-up context is explicitly NOT flagged); and a
+   partition already registered for this experiment cannot be
+   registered again.
+
+**Evaluation** (`app/oos_evidence/evaluation.py` +
+`app/oos_evaluation/engine.py::evaluate_oos_for_partition()`): the
+EXACT SAME pipeline §22 already runs (`_run_pipeline_or_failed_result()`,
+factored out of `evaluate_oos()` itself so both share it verbatim),
+against an explicitly given, already-registered partition instead of
+the one fixed at freeze time. A period that already has a `COMPLETED`
+evaluation can never be evaluated again (`PeriodAlreadyEvaluatedError`)
+— a `FAILED` evaluation does **not** count, so a transient pipeline
+failure can always be retried until it succeeds exactly once. This is
+a NEW, stricter rule specific to accumulation periods; §22's own
+re-run behavior for its originally-linked partition is completely
+unchanged — the two coexist because both write into the SAME
+append-only `oos_evaluations` table (recognizable by `oos_partition_id`),
+which is also why `GET .../oos-evaluations` (§22, unmodified) already
+returns every evaluation from every period with no changes needed.
+
+**Aggregation** (`app/oos_evidence/aggregation.py::build_evidence_summary()`):
+a read-only summary across every `COMPLETED` evaluation ever run for
+an experiment. Deliberately keeps two sample sizes separate, never
+conflated: `total_raw_signals` (every qualifying signal, pooled across
+periods — NOT independent; a condition true on several consecutive
+bars produces several correlated raw signals) vs.
+`total_independent_episodes` (`app/statistical_validation/episodes.py::
+group_into_episodes()`, §18's own non-overlapping-consecutive-bar rule,
+reused unmodified, applied **per period** and summed — never pooled
+across periods first, since two different periods' signals are never
+adjacent bars of one another). `mean_return`/`median_return`/
+`win_rate`/`std_dev_return`/`mean_mfe`/`mean_mae` are computed over the
+pooled raw signal set via `app.backtesting.aggregation.aggregate_results()`
+(§17, reused unmodified) — honest descriptive statistics, explicitly
+**not** a significance claim: no p-value, confidence interval, or
+verdict is computed anywhere in this feature (that is OOS Statistical
+Review's job, a later, separate step out of this feature's scope).
+
+**API** (registration body is the single field this feature needs;
+the evaluate route takes no body at all, matching §22's own
+`oos-evaluate` exactly):
+
+```
+POST /research/experiments/{id}/oos-periods                             register an already-created OOS partition as an additional period
+GET  /research/experiments/{id}/oos-periods                             every OOS period registered for this experiment
+POST /research/experiments/{id}/oos-periods/{oos_partition_id}/evaluate  run (once) this period's own OOS evaluation
+GET  /research/experiments/{id}/oos-evidence                             aggregated evidence across every completed period
+```
+
+`GET /research/experiments/{id}/oos-evaluations` (§22, unmodified)
+already lists every evaluation from every period — no second "list
+evaluations" route was added.
+
+**Lifecycle:** unchanged from §22 — `FROZEN → OOS_EVALUATED` only, on
+the first `COMPLETED` evaluation from ANY period (the original
+partition's or an additional one's). No `OOS_EVALUATED → FROZEN` or
+`OOS_EVALUATED → DRAFT` transition is ever attempted; additional
+periods are extensions of the evidence for the SAME frozen hypothesis,
+and the experiment simply stays `OOS_EVALUATED` across every
+subsequent successful evaluation.
+
+**Persistence:** one purely additive table, `experiment_oos_periods`
+(`experiment_id, oos_partition_id` primary key) — a LINK table only;
+no column was added to `experiments`, `oos_partitions`, or
+`oos_evaluations`, and no `ALTER TABLE` was needed anywhere. No
+update/replace function exists in `app/storage/oos_evidence_repository.py`
+— a period, once registered, is never mutated.
+
+**Real-data validation:** `scripts/run_oos_evidence_accumulation.py
+--demo` first checks this app's own storage for already-ingested real
+TSLA bars and any configured provider credential (neither is present
+in this sandboxed environment, reported plainly, not silently
+substituted), then falls back to the same deterministic, seeded
+random-walk synthetic dataset §22's own `--demo` flag uses, extended to
+three sequential OOS periods against ONE frozen hypothesis. A real run
+confirmed: all three periods `COMPLETED` independently (46/45/45
+signals), append-only persistence (3 `oos_evaluations` rows, 136
+`oos_evaluation_signals` rows), an identical `hypothesis_hash` across
+every evaluation, `historical_features` left at 0 rows (no OOS data
+ever persisted into feature storage), `historical_bars` containing
+exactly the 432 bars seeded (288 development + 3×48 holdout, no
+duplication), and a direct attempt to re-evaluate an already-`COMPLETED`
+period correctly rejected (`PeriodAlreadyEvaluatedError`) against the
+real database, not just in-memory objects.
+
+**Tests:** `tests/test_oos_evidence_period.py`,
+`tests/test_oos_evidence_repository.py`,
+`tests/test_oos_evidence_evaluation.py`,
+`tests/test_oos_evidence_aggregation.py`,
+`tests/test_oos_evidence_api.py` (66 tests) — valid sequential periods,
+overlapping/touching/development-range/cross-contamination rejection,
+mismatched symbol/timeframe/provider rejection, duplicate registration
+rejection, a mutated live `Experiment` row never affecting evaluation,
+multiple sequential periods evaluating independently, a failed
+evaluation followed by a successful one, repeated evaluation of a
+`COMPLETED` period rejected, deterministic results, raw-vs-episode
+distinctness, aggregate-metric reconciliation with the underlying
+evaluations, the absence of any significance-testing field, gated
+holdout access, and no cross-partition signal contamination — plus
+every pre-existing OOS Evaluation v1 test (57 tests) still passing
+unmodified, proving this feature is additive only.
+
+## 24. OOS Statistical Review V1
+
+A formal, **READ-ONLY** statistical review of a frozen experiment's own
+accumulated OOS evidence (§23) — "given all `COMPLETED` OOS periods
+accumulated for this frozen hypothesis, is there sufficient statistical
+evidence that the observed effect differs from the appropriate
+baseline?" Never modifies the hypothesis, the `ExperimentFreezeSnapshot`,
+an OOS partition, an OOS evaluation, an OOS signal, a historical bar,
+or a historical feature — this feature's ONLY write, anywhere, is a
+brand-new, immutable `oos_statistical_reviews` row.
+
+**Provenance (fail-closed):** the hypothesis definition, symbol/
+timeframe/provider/feature-contract, and outcome/horizon all come from
+the immutable `ExperimentFreezeSnapshot`, never the live `Experiment`
+row. Every `COMPLETED` evaluation must agree with the snapshot on
+`hypothesis_hash`, `frozen_snapshot_id`, symbol/timeframe/provider,
+feature contract, and outcome horizon — the FIRST disagreement raises
+`ProvenanceMismatchError` and persists nothing (`app/oos_statistical_review/
+engine.py::_verify_uniform_provenance()`). `FAILED` evaluations are
+excluded from every computation but remain visible on the review as
+`excluded_evaluations`.
+
+**Episode-level analysis:** the conditioned population is ALWAYS the
+episode-level sample (§18's own `group_into_episodes()`/
+`episode_representatives()`, reused unmodified) — computed **per OOS
+period**, before any pooling, so two different periods' signals can
+never be merged into one episode. `sample_sizes` reports raw signal
+count, episode count, and evaluation/period count side by side, never
+conflated.
+
+**OOS-scoped baseline:** `app/oos_statistical_review/baseline.py`
+mirrors OOS Evaluation v1's own bar/feature pipeline exactly (bounded
+development-side warm-up, the sole holdout access path, the Feature
+Engine, unmodified) with §18's `CONTROL_CONDITION` (`volume.volume >=
+0`, reused unmodified) run through Backtesting v1 (reused unmodified)
+in place of the frozen hypothesis' own conditions — the SAME holdout
+bars each evaluation already used, **never development data**. Fails
+closed (`BaselineConstructionError`) if a partition can no longer be
+found or read, rather than silently substituting anything.
+
+**Primary test:** both of Statistical Validation V2's dependence-aware
+baseline methods (§19, reused unmodified) — Method A (non-overlapping
+windows) and Method B (moving block bootstrap) — applied to the
+POOLED, chronologically-ordered episode/baseline samples across every
+included period. Reports conditioned/baseline means, mean-difference
+CI, win-rate CI, effect size (Cohen's d vs. Method A), p-value
+(deterministic, seed=1337, 10,000 resamples, the standard +1/+1
+correction), sample sizes, and a mechanical `conclusion_changes_materially`
+check between the two methods — never picks whichever method looks
+more favorable. The primary `n` is ALWAYS the episode count, never the
+raw signal count.
+
+**Power:** §19's own `minimum_detectable_effect_size()` (reused
+unmodified), reporting whether the observed |Cohen's d| falls below
+what this sample size could reliably detect — never used to declare an
+underpowered result a success.
+
+**Multiple horizons:** the frozen hypothesis' own horizon is always
+primary. `exploratory_horizons` is always empty in V1 (with an
+explanatory note on every review) — OOS Evaluation v1 evaluates exactly
+one window per evaluation, so there is no other already-evaluated
+conditioned population at any other horizon to report without
+re-deriving new evidence, which this feature's own "OOS data is sacred"
+rule forbids.
+
+**Verdict** (`app/oos_statistical_review/verdict.py`, pure, deterministic):
+`SUPPORTED` requires BOTH methods independently significant (p < 0.05
+AND CI excludes zero) AND directionally consistent with the frozen
+Outcome's own operator AND a non-negligible effect size (|d| ≥ 0.2).
+`NOT_SUPPORTED` requires both methods significant in the OPPOSITE
+direction. Everything else — including `p ≥ 0.05` alone — is
+`INCONCLUSIVE`, never `NOT_SUPPORTED`. Fewer than 10 independent
+episodes (or fewer than 2 baseline observations) is always
+`INSUFFICIENT_DATA`, checked first, unconditionally — no formal
+statistic is even computed at that point. This verdict is a statement
+about evidence for the forward-return hypothesis only — never a trading
+recommendation, and never a claim about profitability.
+
+**Per-period consistency:** `per_period_results` reports each period's
+own episode count/mean/median/win-rate/std-dev separately (via §17's
+`aggregate_results()`, reused unmodified) — descriptive only, never
+pooled away, so a directionally-mixed or single-period-driven effect
+stays visible.
+
+**API** (no request body anywhere — every config value, including the
+resampling seed, is fixed and immutable, closing the "pick whichever
+seed/method looks favorable" loophole at the boundary, not just in the
+engine):
+
+```
+POST /research/experiments/{id}/oos-statistical-review     build (and persist) a new review
+GET  /research/experiments/{id}/oos-statistical-reviews    every review ever run for this experiment
+GET  /research/oos-statistical-reviews/{review_id}          one review
+```
+
+**Persistence:** one purely additive table, `oos_statistical_reviews`
+(`id` PRIMARY KEY, a random id like `oos_evaluations.id`) — append-only,
+no update/replace function exists. Running the review again against
+unchanged evidence produces a new row with IDENTICAL analytical content
+(verified against a real database, not just in-memory objects).
+
+**Real-data validation:** `scripts/run_oos_statistical_review.py --demo`
+first checks this app's own storage for real TSLA data and any
+configured provider credential (neither present in this sandboxed
+environment, reported plainly) then falls back to a seeded random-walk
+dataset, accumulates 6 sequential OOS periods (140 raw signals → 71
+independent episodes), and runs the review: `INCONCLUSIVE` (p≈0.66/0.73,
+both methods; negligible effect size; observed effect below the
+minimum detectable threshold) — the honest, expected result for a
+condition with no real edge on random-walk data. `historical_features`
+stayed at 0 rows, `historical_bars` contained exactly the 576 bars
+seeded (no duplication), and running the review a second time against
+the same database produced a second row with byte-identical analytical
+content and a different id.
+
+**Tests:** `tests/test_oos_statistical_review_verdict.py`,
+`tests/test_oos_statistical_review_baseline.py`,
+`tests/test_oos_statistical_review_engine.py`,
+`tests/test_oos_statistical_review_repository.py`,
+`tests/test_oos_statistical_review_api.py` (65 tests) — provenance
+fail-closed (hypothesis-hash mismatch, missing baseline partition),
+`FAILED` evaluations excluded but visible, episode/raw distinctness,
+episodes never merged across periods, deterministic p-values/CIs/effect
+size under a fixed seed, both dependence-aware methods executing and
+reconciling, `conclusion_changes_materially` computed mechanically,
+power/MDE matching a direct call, per-period results never silently
+erasing a contradictory period, `INSUFFICIENT_DATA` for a genuinely
+underpowered sample, full HTTP flow including the adversarial-
+request-body-is-ignored proof, no mutation route for a review, and
+lifecycle untouched by a review — plus every pre-existing test in this
+repository (1,138 tests) still passing unmodified.
 
 ## Known limitations
 
@@ -1105,3 +1362,46 @@ describes actually live, is gitignored local data.
   of holdout as a result — the Feature Engine's own existing
   "insufficient history" behavior, not a bug specific to OOS
   Evaluation.
+- OOS Evidence Accumulation V1's real-data validation (§23) used
+  seeded synthetic TSLA-labeled data, exactly like §22's own `--demo`
+  run — this sandboxed environment has neither previously-ingested real
+  TSLA bars nor any market-data provider credential configured
+  (`app.config.get_provider_credential()` confirmed empty for every
+  supported provider), so a genuine real-TSLA multi-period run has not
+  actually been executed. `scripts/run_oos_evidence_accumulation.py`
+  checks for real data first and will use it automatically once either
+  becomes available; nothing about the underlying registration/
+  evaluation/aggregation logic itself depends on synthetic data — it
+  reuses §22's own pipeline unmodified.
+- Aggregation's pooled `mean_return`/`median_return`/`win_rate`/
+  `std_dev_return` (§23) are computed over the RAW, pooled signal set,
+  which can include correlated observations even though
+  `total_independent_episodes` is reported alongside it — reading the
+  pooled statistics as if they had `total_raw_signals` independent
+  degrees of freedom would overstate their precision. This is why V1
+  deliberately computes no p-value, confidence interval, or
+  significance verdict at all; that correction is OOS Statistical
+  Review's job, not this feature's.
+- OOS Statistical Review V1's real-data validation (§24) used the same
+  seeded synthetic TSLA-labeled data as §22/§23's own `--demo` runs —
+  this environment still has no previously-ingested real TSLA bars and
+  no market-data provider credential configured, so a genuine
+  real-TSLA review has not actually been run. Nothing about the
+  review's own methodology depends on synthetic data;
+  `scripts/run_oos_statistical_review.py` checks for real evidence
+  first and will use it automatically once available — and, per this
+  feature's own explicit instruction, if the REAL TSLA experiment's
+  accumulated evidence ever turns out to contain fewer than 10
+  independent episodes, the correct, and only acceptable, result is
+  `INSUFFICIENT_DATA` (or `INCONCLUSIVE`), never a fabricated p-value.
+- Method B's (moving block bootstrap) pooled baseline series is formed
+  by concatenating each OOS period's own chronologically-ordered
+  returns, period by period (§24) — this can occasionally place two
+  bars from DIFFERENT, non-adjacent periods next to each other in the
+  resampled series at a period "seam". A resampled block that happens
+  to straddle exactly one such seam mixes two periods' returns within
+  one block; this is a standard, minor approximation (the same kind of
+  documented approximation Method A's own non-overlapping-windows
+  baseline already carries for residual serial correlation) — it does
+  not affect Method A, which resamples via real timestamps rather than
+  array position and is therefore immune to this specific seam.

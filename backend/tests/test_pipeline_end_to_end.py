@@ -286,9 +286,11 @@ class TestRawStorage:
         # backtests/backtest_signals (Backtesting v1), oos_partitions
         # (OOS / Holdout Partition Framework v1, v0.1.29),
         # experiment_freeze_snapshots (Experiment Freeze & Provenance
-        # v1, v0.1.30), and oos_evaluations/oos_evaluation_signals (OOS
-        # Evaluation v1, v0.1.31) are all defined in the same schema
-        # file (app/storage/db.py) as everything else here --
+        # v1, v0.1.30), oos_evaluations/oos_evaluation_signals (OOS
+        # Evaluation v1, v0.1.31), experiment_oos_periods (OOS
+        # Evidence Accumulation V1, v0.1.33), and oos_statistical_reviews
+        # (OOS Statistical Review V1, v0.1.34) are all defined in the
+        # same schema file (app/storage/db.py) as everything else here --
         # get_connection() creates the whole schema in one
         # executescript() call, so any table it knows about shows up
         # the moment a connection is opened, not just the ones this
@@ -306,6 +308,8 @@ class TestRawStorage:
             "experiment_freeze_snapshots",
             "oos_evaluations",
             "oos_evaluation_signals",
+            "experiment_oos_periods",
+            "oos_statistical_reviews",
         }
 
     def test_raw_ingestion_row_exists_for_tsla_after_fetch(self, pipeline_result):
