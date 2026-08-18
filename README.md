@@ -93,7 +93,7 @@ in the gitignored `.dev/`). Backend: `http://localhost:8000` (Swagger UI
 at `/docs`). Frontend: `http://localhost:5173`, expects the backend at
 `:8000` (`frontend/src/api/client.ts`).
 
-Backend tests: `cd backend && ./venv/bin/pytest` — 856+ tests, all
+Backend tests: `cd backend && ./venv/bin/pytest` — 902+ tests, all
 against synthetic/mocked data, no live network calls or real credentials
 required.
 
@@ -386,7 +386,7 @@ consumers built on top of it.
 
 ## 13. Testing
 
-`cd backend && ./venv/bin/pytest` — 856+ deterministic tests, all against
+`cd backend && ./venv/bin/pytest` — 902+ deterministic tests, all against
 synthetic fixtures or mocked HTTP, no live provider credentials or
 network access required anywhere in the suite. Manual, opt-in scripts
 that DO hit real provider APIs with your own credentials
@@ -673,6 +673,67 @@ Feature Engine → real Research → real Backtesting v1 → Statistical
 Validation) exercising sample-size reconciliation, exactly-one-primary-
 horizon, and error handling (a stale/tampered persisted backtest is
 detected and rejected, never silently trusted).
+
+## 19. Statistical Validation v2
+
+Corrects V1's one flagged weakness (see §18's own Limitations): V1's
+baseline treated every eligible bar as an independent observation
+despite adjacent bars' forward-return windows overlapping heavily —
+V1's own report on the real TSLA experiment flagged this explicitly
+rather than silently trusting the number. `app/statistical_validation/v2/`
+is additive only — it does not modify V1
+(`app/statistical_validation/{episodes,baseline,resampling,engine}.py`),
+the Feature Engine, Research, or Backtesting, and reuses V1's episode
+definition and unconditional-baseline construction unchanged.
+
+**Two independent, clearly-labeled dependence corrections for the
+baseline side** (the conditioned side keeps V1's episode-level
+treatment exactly):
+
+- **Method A — non-overlapping windows** (`app/statistical_validation/v2/baseline.py`):
+  subsamples V1's own baseline down to entries whose forward-return
+  windows never overlap. Once non-overlapping, V1's own, unmodified
+  bootstrap/permutation functions apply directly — no new statistical
+  machinery needed.
+- **Method B — moving block bootstrap** (`app/statistical_validation/v2/resampling.py`):
+  resamples the full, chronologically-ordered, overlapping baseline
+  series in contiguous blocks (length = 4× the horizon, a fixed,
+  documented rule) rather than individual points — the standard
+  technique (Künsch 1989; Politis & Romano) for a valid bootstrap
+  distribution from serially dependent data. Its hypothesis test uses
+  the standard "H0-centered bootstrap test" construction (Hall &
+  Wilson 1991): both samples are shifted to a common mean before
+  resampling, since naively permuting individual points in an
+  autocorrelated series would produce an invalidly narrow (falsely
+  confident) null distribution.
+
+Run for real against the same TSLA experiment (5-bar horizon, 65
+episodes): Method A gives p=0.2526, Method B gives p=0.4140 — both
+methods agree the 5-bar effect does not clearly stand out from
+baseline once dependence is handled correctly on both sides, and the
+two methods' conclusions agree (`conclusion_changes_materially: False`).
+
+**Post-hoc power analysis** (`app/statistical_validation/v2/power.py`):
+a standard closed-form minimum-detectable-effect-size calculation (no
+scipy dependency — two fixed, tabulated z-quantiles) — with 65
+episodes and 946 effective baseline observations, this study could
+reliably detect a Cohen's d of ≈0.36 at 80% power; the observed d
+(≈0.15) is below that threshold, meaning a null result here is
+unsurprising on power grounds alone, never interpreted as evidence
+that no effect exists.
+
+15/30/60-bar horizons remain descriptive only — no CI, no p-value, no
+effect size at any horizon but the primary one, per this feature's own
+scope.
+
+**Tests:** `tests/test_statistical_validation_v2_*.py` (46 tests) —
+non-overlapping selection (dense spacing, real gaps, out-of-order
+input), moving-block-bootstrap determinism and a hand-verified
+periodic-series exact-mean case, the H0-shift p-value's invariance to
+a common additive shift, the power formula against a hand-computed
+value, and a full synthetic pipeline exercising population-count
+reconciliation, both methods' CI/p-value validity, and the same
+error-handling guarantees as V1.
 
 ## Known limitations
 
