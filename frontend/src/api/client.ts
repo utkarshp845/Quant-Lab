@@ -13,6 +13,27 @@ import type {
 } from "../types/marketData";
 import type { MonteCarloRequest, MonteCarloResult } from "../types/monteCarlo";
 import type { Experiment, ExperimentCreateRequest, ExperimentEventsResponse } from "../types/research";
+import type { Backtest, BacktestCreateRequest, BacktestSignalsResponse } from "../types/backtesting";
+import type { OOSPartition, OOSPartitionCreateRequest } from "../types/oosPartitions";
+import type { ExperimentFreezeSnapshot, ExperimentProvenance, OOSPartitionLinkRequest } from "../types/experimentFreeze";
+import type { OOSEvaluationResult, OOSSignal } from "../types/oosEvaluation";
+import type { OOSEvidenceSummary, OOSPeriod, OOSPeriodLinkRequest } from "../types/oosEvidence";
+import type { StatisticalValidationReport } from "../types/statisticalValidation";
+import type { StatisticalValidationReportV2 } from "../types/statisticalValidationV2";
+import type { OOSStatisticalReview } from "../types/oosStatisticalReview";
+import type {
+  Conclusion,
+  ConclusionCreateRequest,
+  ConditionPreviewRequest,
+  ConditionPreviewResponse,
+  ExperimentVersionsResponse,
+  Observation,
+  ObservationCreateRequest,
+  ResearchDecision,
+  ResearchDecisionCreateRequest,
+} from "../types/researchNotebook";
+import type { PipelineStatusResponse } from "../types/pipelineStatus";
+import type { EventLineage } from "../types/researchLineage";
 
 // Exported so anything that needs the backend's origin without going
 // through one of this file's request helpers -- currently just the
@@ -288,6 +309,220 @@ export function getExperimentEvents(id: string): Promise<ExperimentEventsRespons
  * reproducibility guarantee. */
 export function runExperiment(id: string): Promise<Experiment> {
   return postJson<Experiment>(`/research/experiments/${encodeURIComponent(id)}/run`, undefined);
+}
+
+// ---- Backtesting v1 (see backend/app/api/backtesting.py) ----
+// A Backtest always references an existing Experiment by id -- never a
+// second way to define conditions. Signal-level outcome measurement
+// (next-bar-open entry, forward return/MFE/MAE per horizon) -- NOT
+// position sizing, capital tracking, or simulated P&L (see the
+// Backtest stage UI's own "Strategy Definition required" placeholder
+// for that gap).
+
+export function createBacktest(request: BacktestCreateRequest): Promise<Backtest> {
+  return postJson<Backtest>("/backtests", request);
+}
+
+export function listBacktests(experimentId?: string): Promise<Backtest[]> {
+  const qs = experimentId ? `?experiment_id=${encodeURIComponent(experimentId)}` : "";
+  return getJson<Backtest[]>(`/backtests${qs}`);
+}
+
+export function getBacktest(id: string): Promise<Backtest> {
+  return getJson<Backtest>(`/backtests/${encodeURIComponent(id)}`);
+}
+
+export function getBacktestSignals(id: string): Promise<BacktestSignalsResponse> {
+  return getJson<BacktestSignalsResponse>(`/backtests/${encodeURIComponent(id)}/signals`);
+}
+
+export function runBacktest(id: string): Promise<Backtest> {
+  return postJson<Backtest>(`/backtests/${encodeURIComponent(id)}/run`, undefined);
+}
+
+// ---- Statistical Validation V1/V2 (see backend/app/api/statistical_validation.py) ----
+// Derived, on-demand reports -- never persisted, always recomputed
+// from a Backtest's own already-persisted signals. V2 is the
+// dependence-aware successor; prefer it, V1 is shown for comparison.
+
+export function getStatisticalValidation(
+  backtestId: string,
+  params?: { primary_window_bars?: number },
+): Promise<StatisticalValidationReport> {
+  const qs = params?.primary_window_bars != null ? `?primary_window_bars=${params.primary_window_bars}` : "";
+  return getJson<StatisticalValidationReport>(`/backtests/${encodeURIComponent(backtestId)}/statistical-validation${qs}`);
+}
+
+export function getStatisticalValidationV2(
+  backtestId: string,
+  params?: { primary_window_bars?: number },
+): Promise<StatisticalValidationReportV2> {
+  const qs = params?.primary_window_bars != null ? `?primary_window_bars=${params.primary_window_bars}` : "";
+  return getJson<StatisticalValidationReportV2>(
+    `/backtests/${encodeURIComponent(backtestId)}/statistical-validation-v2${qs}`,
+  );
+}
+
+// ---- OOS / Holdout Partition Framework v1 (see backend/app/api/oos_partitions.py) ----
+
+export function createOosPartition(request: OOSPartitionCreateRequest): Promise<OOSPartition> {
+  return postJson<OOSPartition>("/oos/partitions", request);
+}
+
+export function listOosPartitions(params?: { symbol?: string; timeframe?: string; provider?: string }): Promise<OOSPartition[]> {
+  const qs = new URLSearchParams();
+  if (params?.symbol) qs.set("symbol", params.symbol);
+  if (params?.timeframe) qs.set("timeframe", params.timeframe);
+  if (params?.provider) qs.set("provider", params.provider);
+  const suffix = qs.toString() ? `?${qs}` : "";
+  return getJson<OOSPartition[]>(`/oos/partitions${suffix}`);
+}
+
+export function getOosPartition(id: string): Promise<OOSPartition> {
+  return getJson<OOSPartition>(`/oos/partitions/${encodeURIComponent(id)}`);
+}
+
+// ---- Experiment Freeze & Provenance v1 (see backend/app/api/experiment_freeze.py) ----
+
+export function associateOosPartition(experimentId: string, request: OOSPartitionLinkRequest): Promise<Experiment> {
+  return postJson<Experiment>(`/research/experiments/${encodeURIComponent(experimentId)}/oos-partition`, request);
+}
+
+export function freezeExperiment(experimentId: string): Promise<Experiment> {
+  return postJson<Experiment>(`/research/experiments/${encodeURIComponent(experimentId)}/freeze`, undefined);
+}
+
+export function getFrozenSnapshot(experimentId: string): Promise<ExperimentFreezeSnapshot> {
+  return getJson<ExperimentFreezeSnapshot>(`/research/experiments/${encodeURIComponent(experimentId)}/frozen`);
+}
+
+export function getExperimentProvenance(experimentId: string): Promise<ExperimentProvenance> {
+  return getJson<ExperimentProvenance>(`/research/experiments/${encodeURIComponent(experimentId)}/provenance`);
+}
+
+export function archiveExperiment(experimentId: string): Promise<Experiment> {
+  return postJson<Experiment>(`/research/experiments/${encodeURIComponent(experimentId)}/archive`, undefined);
+}
+
+// ---- OOS Evaluation v1 (see backend/app/api/oos_evaluation.py) ----
+// Request body is always ignored server-side -- every research-defining
+// fact comes from the frozen snapshot + linked partition, never the caller.
+
+export function runOosEvaluation(experimentId: string): Promise<OOSEvaluationResult> {
+  return postJson<OOSEvaluationResult>(`/research/experiments/${encodeURIComponent(experimentId)}/oos-evaluate`, undefined);
+}
+
+export function listOosEvaluations(experimentId: string): Promise<OOSEvaluationResult[]> {
+  return getJson<OOSEvaluationResult[]>(`/research/experiments/${encodeURIComponent(experimentId)}/oos-evaluations`);
+}
+
+export function getOosEvaluation(evaluationId: string): Promise<OOSEvaluationResult> {
+  return getJson<OOSEvaluationResult>(`/research/oos-evaluations/${encodeURIComponent(evaluationId)}`);
+}
+
+export function getOosEvaluationSignals(evaluationId: string): Promise<OOSSignal[]> {
+  return getJson<OOSSignal[]>(`/research/oos-evaluations/${encodeURIComponent(evaluationId)}/signals`);
+}
+
+// ---- OOS Evidence Accumulation V1 (see backend/app/api/oos_evidence.py) ----
+
+export function registerOosPeriod(experimentId: string, request: OOSPeriodLinkRequest): Promise<OOSPeriod> {
+  return postJson<OOSPeriod>(`/research/experiments/${encodeURIComponent(experimentId)}/oos-periods`, request);
+}
+
+export function listOosPeriods(experimentId: string): Promise<OOSPeriod[]> {
+  return getJson<OOSPeriod[]>(`/research/experiments/${encodeURIComponent(experimentId)}/oos-periods`);
+}
+
+export function evaluateOosPeriod(experimentId: string, oosPartitionId: string): Promise<OOSEvaluationResult> {
+  return postJson<OOSEvaluationResult>(
+    `/research/experiments/${encodeURIComponent(experimentId)}/oos-periods/${encodeURIComponent(oosPartitionId)}/evaluate`,
+    undefined,
+  );
+}
+
+export function getOosEvidence(experimentId: string): Promise<OOSEvidenceSummary> {
+  return getJson<OOSEvidenceSummary>(`/research/experiments/${encodeURIComponent(experimentId)}/oos-evidence`);
+}
+
+// ---- OOS Statistical Review V1 (see backend/app/api/oos_statistical_review.py) ----
+// No request body -- every config value, including the resampling
+// seed, is fixed and immutable.
+
+export function runOosStatisticalReview(experimentId: string): Promise<OOSStatisticalReview> {
+  return postJson<OOSStatisticalReview>(
+    `/research/experiments/${encodeURIComponent(experimentId)}/oos-statistical-review`,
+    undefined,
+  );
+}
+
+export function listOosStatisticalReviews(experimentId: string): Promise<OOSStatisticalReview[]> {
+  return getJson<OOSStatisticalReview[]>(`/research/experiments/${encodeURIComponent(experimentId)}/oos-statistical-reviews`);
+}
+
+export function getOosStatisticalReview(reviewId: string): Promise<OOSStatisticalReview> {
+  return getJson<OOSStatisticalReview>(`/research/oos-statistical-reviews/${encodeURIComponent(reviewId)}`);
+}
+
+// ---- Research Notebook v1 (see backend/app/api/research_notebook.py) ----
+// Observation ("what happened"), Decision (candidate-selection
+// provenance log), Conclusion (a verdict that must reference its own
+// evidence), and the experiment version tree. None of these duplicate
+// Research v1 -- they're provenance/methodology metadata alongside it.
+
+export function createObservation(request: ObservationCreateRequest): Promise<Observation> {
+  return postJson<Observation>("/research/observations", request);
+}
+
+export function listObservations(symbol?: string): Promise<Observation[]> {
+  const qs = symbol ? `?symbol=${encodeURIComponent(symbol)}` : "";
+  return getJson<Observation[]>(`/research/observations${qs}`);
+}
+
+export function getObservation(id: string): Promise<Observation> {
+  return getJson<Observation>(`/research/observations/${encodeURIComponent(id)}`);
+}
+
+export function createDecision(request: ResearchDecisionCreateRequest): Promise<ResearchDecision> {
+  return postJson<ResearchDecision>("/research/decisions", request);
+}
+
+export function listDecisions(designGroupId: string): Promise<ResearchDecision[]> {
+  return getJson<ResearchDecision[]>(`/research/design-groups/${encodeURIComponent(designGroupId)}/decisions`);
+}
+
+export function createConclusion(experimentId: string, request: ConclusionCreateRequest): Promise<Conclusion> {
+  return postJson<Conclusion>(`/research/experiments/${encodeURIComponent(experimentId)}/conclusions`, request);
+}
+
+export function listConclusions(experimentId: string): Promise<Conclusion[]> {
+  return getJson<Conclusion[]>(`/research/experiments/${encodeURIComponent(experimentId)}/conclusions`);
+}
+
+export function getExperimentVersions(experimentId: string): Promise<ExperimentVersionsResponse> {
+  return getJson<ExperimentVersionsResponse>(`/research/experiments/${encodeURIComponent(experimentId)}/versions`);
+}
+
+export function previewConditions(request: ConditionPreviewRequest): Promise<ConditionPreviewResponse> {
+  return postJson<ConditionPreviewResponse>("/research/conditions/preview", request);
+}
+
+// ---- Pipeline status (see backend/app/api/research_pipeline.py) ----
+// The single source of truth for "what stage is this experiment at,
+// right now" -- drives components/research/ResearchPipeline.tsx.
+
+export function getPipelineStatus(experimentId: string): Promise<PipelineStatusResponse> {
+  return getJson<PipelineStatusResponse>(`/research/experiments/${encodeURIComponent(experimentId)}/pipeline-status`);
+}
+
+// ---- Data lineage (see backend/app/api/research_lineage.py) ----
+// "Why did this event qualify?" -- a read-only bundle of the signal
+// bar, feature record, condition evaluations, and outcome bar for one
+// already-detected event.
+
+export function getEventLineage(experimentId: string, signalTimestamp: string): Promise<EventLineage> {
+  const qs = `?signal_timestamp=${encodeURIComponent(signalTimestamp)}`;
+  return getJson<EventLineage>(`/research/experiments/${encodeURIComponent(experimentId)}/lineage${qs}`);
 }
 
 export async function importCsv(file: File): Promise<CsvImportResponse> {

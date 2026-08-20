@@ -1,5 +1,21 @@
+import { ApiError } from "../api/client";
 import type { FeatureCondition } from "../types/research";
 import { fmtNumber, fmtPercent } from "./format";
+
+/** A readable error message for any caught value from an api/client.ts
+ * call. ApiError's own `message` is a generic category label ("Please
+ * fix the highlighted inputs.") when `details` came from a pydantic
+ * field-error list, but the SAME field also carries a single plain-
+ * string backend detail (e.g. "no holdout bars -- cannot safely
+ * construct an OOS-scoped baseline") verbatim -- surfacing it here
+ * instead of only the generic label is the difference between an
+ * actionable error and a dead end. */
+export function apiErrorMessage(err: unknown, fallback = "Could not reach the backend. Is it running?"): string {
+  if (err instanceof ApiError) {
+    return err.details.length > 0 ? err.details.join(" ") : err.message;
+  }
+  return fallback;
+}
 
 /** Null-safe wrapper around the existing fmtPercent/fmtNumber helpers
  * (src/utils/format.ts) for the feature/research values that are

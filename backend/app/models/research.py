@@ -274,6 +274,27 @@ class ExperimentCreateRequest(BaseModel):
     `conditions` (v0.1.24, replacing the old singular `condition`) must
     have at least one entry -- an experiment with zero conditions has
     no falsifiable hypothesis to test at all.
+
+    Research Notebook v1 (app/models/research_notebook.py) adds nine
+    OPTIONAL, additive fields below, all `None`-default: an existing
+    caller (including every backend test that builds a request without
+    them) is completely unaffected. Two groups:
+
+      - structured hypothesis (`expected_direction`/`expected_behavior`/
+        `rationale`/`invalidation_criteria`/`originating_observation_id`):
+        the fields spec section 7 asks a hypothesis to capture beyond
+        the existing free-text `hypothesis` string -- never validated
+        against anything (free text, like `hypothesis` itself), never
+        read by app/research/engine.py, purely descriptive metadata a
+        reader inspects to understand WHY this experiment exists.
+      - versioning (`design_group_id`/`candidate_label`/
+        `parent_experiment_id`/`version_label`): how a set of candidate
+        definitions considered together (spec section 8) and a later
+        "new version of an existing experiment" (spec section 10) are
+        represented -- as plain links between ordinary Experiment rows,
+        not a second, parallel "candidate" entity. See
+        app/models/research_notebook.py::ExperimentVersionsResponse for
+        how these are assembled into a tree + diff.
     """
 
     name: str
@@ -285,6 +306,15 @@ class ExperimentCreateRequest(BaseModel):
     provider: str
     conditions: list[FeatureCondition] = Field(min_length=1)
     outcome: Outcome
+    expected_direction: str | None = None
+    expected_behavior: str | None = None
+    rationale: str | None = None
+    invalidation_criteria: str | None = None
+    originating_observation_id: str | None = None
+    design_group_id: str | None = None
+    candidate_label: str | None = None
+    parent_experiment_id: str | None = None
+    version_label: str | None = None
 
 
 class Experiment(BaseModel):
@@ -356,6 +386,15 @@ class Experiment(BaseModel):
     hypothesis_hash: str | None = None
     frozen_at: datetime | None = None
     archived_at: datetime | None = None
+    expected_direction: str | None = None
+    expected_behavior: str | None = None
+    rationale: str | None = None
+    invalidation_criteria: str | None = None
+    originating_observation_id: str | None = None
+    design_group_id: str | None = None
+    candidate_label: str | None = None
+    parent_experiment_id: str | None = None
+    version_label: str | None = None
 
     @classmethod
     def new(cls, request: ExperimentCreateRequest) -> "Experiment":
@@ -383,6 +422,15 @@ class Experiment(BaseModel):
             status=ExperimentStatus.DRAFT,
             created_at=datetime.now(timezone.utc),
             lifecycle_state=ExperimentLifecycleState.DRAFT,
+            expected_direction=request.expected_direction,
+            expected_behavior=request.expected_behavior,
+            rationale=request.rationale,
+            invalidation_criteria=request.invalidation_criteria,
+            originating_observation_id=request.originating_observation_id,
+            design_group_id=request.design_group_id,
+            candidate_label=request.candidate_label,
+            parent_experiment_id=request.parent_experiment_id,
+            version_label=request.version_label,
         )
 
 

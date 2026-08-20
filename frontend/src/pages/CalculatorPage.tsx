@@ -2,10 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { analyzeBearPutSpread, ApiError } from "../api/client";
 import { AssumptionsFooter } from "../components/AssumptionsFooter";
 import { DeltaSection } from "../components/DeltaSection";
-import { HistoricalDataPanel } from "../components/HistoricalDataPanel";
 import { InputsPanel, type InputMode } from "../components/InputsPanel";
-import { LiveQuotePanel } from "../components/LiveQuotePanel";
-import { LiveStreamPanel } from "../components/LiveStreamPanel";
 import { MonteCarloSection } from "../components/MonteCarloSection";
 import { PayoffCalculator } from "../components/PayoffCalculator";
 import { PayoffChart } from "../components/PayoffChart";
@@ -122,31 +119,15 @@ export function CalculatorPage() {
   return (
     <div className="page">
       <header className="page-header">
-        <h1>Pandey Quant Lab</h1>
+        <h1>Calculator</h1>
         <p className="tagline">
-          Transparent Bear Put Spread Calculator — v0.1, an educational tool. Not financial
-          advice. No live data, no brokerage connection, no trade execution.
+          Transparent Bear Put Spread Calculator — a secondary utility, not a research tool. Every
+          number traces to a visible formula. Not financial advice. No live data feeds this
+          automatically, no brokerage connection, no trade execution. Looking for live quotes,
+          streaming, or historical bars? See <strong>Data</strong>.
         </p>
         {loading && <span className="loading-pill">Recalculating…</span>}
       </header>
-
-      <section className="live-data-proof-of-concept">
-        <p className="live-data-proof-of-concept-label">
-          Live market data test — proves Provider → Backend → Normalized Data → this UI. Independent
-          of the calculator below; picking a provider or fetching a quote never changes any input.
-        </p>
-        <LiveQuotePanel symbol="TSLA" />
-        <LiveStreamPanel symbol="TSLA" />
-      </section>
-
-      <section className="historical-data-test">
-        <p className="historical-data-test-label">
-          Historical market data test (v0.1.16) — proves Provider → Backend → Normalized Data
-          (HistoricalBar) → this UI for OHLCV bars, and lets a CSV export be diffed against a live
-          provider for the same symbol/timeframe/period. Independent of the calculator below.
-        </p>
-        <HistoricalDataPanel />
-      </section>
 
       <InputsPanel
         form={form}

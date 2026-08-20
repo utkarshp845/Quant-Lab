@@ -1,9 +1,17 @@
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import type { ExperimentEvent, Experiment } from "../../types/research";
 import { describeFeatureCondition, fmtNumberOrDash, fmtPercentOrDash } from "../../utils/researchFormat";
+import { BacktestPanel } from "./BacktestPanel";
+import { ComingSoonPanel } from "../ComingSoonPanel";
+import { ConclusionForm } from "./ConclusionForm";
+import { ConditionFunnel } from "./ConditionFunnel";
+import { ExperimentVersions } from "./ExperimentVersions";
+import { LineageView } from "./LineageView";
+import { OOSPanel } from "./OOSPanel";
 import { ResearchDistributionChart } from "./ResearchDistributionChart";
 import { conditionCountWarnings, dateRangeWarnings, multipleTestingWarning, sampleSizeWarnings } from "./researchWarnings";
 import { SegmentationPanel } from "./SegmentationPanel";
+import { StatisticalValidationPanel } from "./StatisticalValidationPanel";
 import { WarningsPanel } from "./WarningsPanel";
 
 export function ExperimentResultsView({
@@ -15,6 +23,13 @@ export function ExperimentResultsView({
   runError,
   onRun,
   sameSymbolExperimentCount,
+  freezing,
+  freezeError,
+  onFreeze,
+  onViewDesignGroup,
+  onViewVersion,
+  onNewVersion,
+  onExperimentUpdated,
 }: {
   experiment: Experiment;
   events: ExperimentEvent[] | null;
@@ -24,7 +39,17 @@ export function ExperimentResultsView({
   runError: string | null;
   onRun: () => void;
   sameSymbolExperimentCount: number;
+  freezing: boolean;
+  freezeError: string | null;
+  onFreeze: () => void;
+  onViewDesignGroup: (designGroupId: string) => void;
+  onViewVersion: (id: string) => void;
+  onNewVersion: () => void;
+  onExperimentUpdated: (experiment: Experiment) => void;
 }) {
+  const [drillDownTimestamp, setDrillDownTimestamp] = useState<string | null>(null);
+  const [selectedBacktestId, setSelectedBacktestId] = useState<string | null>(null);
+
   const warnings = useMemo(() => {
     const list = [
       ...dateRangeWarnings(experiment.start_date, experiment.end_date),
@@ -84,7 +109,51 @@ export function ExperimentResultsView({
       <section className="section research-block research-block-hypothesis">
         <h2 className="section-title">Hypothesis</h2>
         <p>{experiment.hypothesis}</p>
+        {(experiment.expected_direction || experiment.expected_behavior || experiment.rationale || experiment.invalidation_criteria) ? (
+          <dl className="feature-explorer-dataset-grid">
+            {experiment.expected_direction && (
+              <div>
+                <dt>Expected direction</dt>
+                <dd>{experiment.expected_direction}</dd>
+              </div>
+            )}
+            {experiment.expected_behavior && (
+              <div>
+                <dt>Expected behavior</dt>
+                <dd>{experiment.expected_behavior}</dd>
+              </div>
+            )}
+            {experiment.rationale && (
+              <div>
+                <dt>Rationale</dt>
+                <dd>{experiment.rationale}</dd>
+              </div>
+            )}
+            {experiment.invalidation_criteria && (
+              <div>
+                <dt>Invalidation criteria</dt>
+                <dd>{experiment.invalidation_criteria}</dd>
+              </div>
+            )}
+          </dl>
+        ) : (
+          <p className="research-gap-note">Legacy experiment — structured hypothesis metadata unavailable.</p>
+        )}
       </section>
+
+      {/* ---- Design / provenance ---- */}
+      {experiment.design_group_id && (
+        <section className="section research-block">
+          <h2 className="section-title">Design</h2>
+          <p>
+            Candidate <strong>{experiment.candidate_label ?? "?"}</strong> in design group{" "}
+            <code>{experiment.design_group_id}</code>.
+          </p>
+          <button type="button" onClick={() => onViewDesignGroup(experiment.design_group_id!)}>
+            View design group &amp; decision log
+          </button>
+        </section>
+      )}
 
       {/* ---- Conditions & outcome ---- */}
       <section className="section research-block">
@@ -118,6 +187,44 @@ export function ExperimentResultsView({
       {experiment.status === "failed" && experiment.error_message && (
         <div className="error-banner">Run failed: {experiment.error_message}</div>
       )}
+
+      {/* ---- Lock ---- */}
+      <section className="section research-block">
+        <h2 className="section-title">
+          Lock{" "}
+          <span className={`experiment-lifecycle experiment-lifecycle-${experiment.lifecycle_state}`}>
+            {experiment.lifecycle_state}
+          </span>
+        </h2>
+        {experiment.lifecycle_state === "draft" ? (
+          <>
+            <p className="section-subtitle">
+              Freezing commits this hypothesis's definition -- after that point, it cannot silently change.
+              Do this once you're done iterating, before backtesting or OOS evaluation.
+            </p>
+            <button type="button" onClick={onFreeze} disabled={freezing}>
+              {freezing ? "Freezing…" : "Freeze this experiment"}
+            </button>
+            {freezeError && <div className="error-banner">{freezeError}</div>}
+          </>
+        ) : (
+          <p className="section-subtitle">
+            Frozen at <code>{experiment.frozen_at}</code>. Hash <code>{experiment.hypothesis_hash?.slice(0, 16)}…</code>
+          </p>
+        )}
+        <h3 className="experiment-form-subheading">Versions</h3>
+        <ExperimentVersions experimentId={experiment.id} onView={onViewVersion} onNewVersion={onNewVersion} />
+      </section>
+
+      {/* ---- Detect ---- */}
+      <section className="section research-block">
+        <h2 className="section-title">Detect</h2>
+        <p className="section-subtitle">
+          How much data survives each condition, in order -- counts and percentages, computed with no
+          outcome ever attached (same preview endpoint the Design stage uses).
+        </p>
+        <ConditionFunnel experiment={experiment} />
+      </section>
 
       {experiment.status === "completed" && experiment.results && (
         <>
@@ -189,6 +296,44 @@ export function ExperimentResultsView({
             </section>
           )}
 
+          {events && events.length > 0 && (
+            <section className="section research-block">
+              <h2 className="section-title">Individual events</h2>
+              <p className="section-subtitle">Every qualifying signal, not just the aggregate -- click through to see exactly why each one qualified.</p>
+              <div className="table-wrap">
+                <table className="payoff-table">
+                  <thead>
+                    <tr>
+                      <th>Signal time</th>
+                      <th>Signal price</th>
+                      <th>Outcome</th>
+                      <th>Success</th>
+                      <th />
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {events.slice(0, 50).map((e) => (
+                      <tr key={e.signal_timestamp}>
+                        <td>
+                          <code>{e.signal_timestamp}</code>
+                        </td>
+                        <td>{fmtNumberOrDash(e.signal_price, 2)}</td>
+                        <td>{fmtPercentOrDash(e.outcome_value, 2)}</td>
+                        <td>{e.success ? "yes" : "no"}</td>
+                        <td>
+                          <button type="button" onClick={() => setDrillDownTimestamp(e.signal_timestamp)}>
+                            Why did this qualify?
+                          </button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              {events.length > 50 && <p className="research-gap-note">Showing the first 50 of {events.length} events.</p>}
+            </section>
+          )}
+
           <SegmentationPanel />
 
           {/* ---- Interpretation ---- */}
@@ -209,6 +354,45 @@ export function ExperimentResultsView({
             </ul>
           </section>
         </>
+      )}
+
+      {/* ---- Backtest ---- */}
+      <section className="section research-block">
+        <h2 className="section-title">Backtest</h2>
+        <BacktestPanel experimentId={experiment.id} onSelectBacktest={(id) => setSelectedBacktestId(id)} />
+      </section>
+
+      {/* ---- Compare + Validate ---- */}
+      {selectedBacktestId && (
+        <section className="section research-block">
+          <StatisticalValidationPanel backtestId={selectedBacktestId} />
+        </section>
+      )}
+
+      {/* ---- Conclude ---- */}
+      <section className="section research-block">
+        <h2 className="section-title">Conclude</h2>
+        <ConclusionForm experimentId={experiment.id} />
+      </section>
+
+      {/* ---- OOS ---- */}
+      <section className="section research-block">
+        <h2 className="section-title">OOS — out-of-sample evaluation</h2>
+        <p className="section-subtitle">
+          Backtesting is not the final validation step. This evaluates the FROZEN hypothesis against
+          holdout data it has never touched during research.
+        </p>
+        <OOSPanel experiment={experiment} onExperimentUpdated={onExperimentUpdated} />
+      </section>
+
+      {/* ---- Paper Trade / Live (honest placeholder) ---- */}
+      <ComingSoonPanel
+        title="Paper Trade / Live"
+        reason="Not implemented. No simulated account, no order execution, at any point in this project. The intended eventual path is Research -> Validation -> Backtest -> OOS -> Paper Trade -> Live -- this placeholder exists so that path stays visible rather than silently missing."
+      />
+
+      {drillDownTimestamp && (
+        <LineageView experimentId={experiment.id} signalTimestamp={drillDownTimestamp} onClose={() => setDrillDownTimestamp(null)} />
       )}
     </div>
   );

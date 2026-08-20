@@ -288,10 +288,12 @@ class TestRawStorage:
         # experiment_freeze_snapshots (Experiment Freeze & Provenance
         # v1, v0.1.30), oos_evaluations/oos_evaluation_signals (OOS
         # Evaluation v1, v0.1.31), experiment_oos_periods (OOS
-        # Evidence Accumulation V1, v0.1.33), and oos_statistical_reviews
-        # (OOS Statistical Review V1, v0.1.34) are all defined in the
-        # same schema file (app/storage/db.py) as everything else here --
-        # get_connection() creates the whole schema in one
+        # Evidence Accumulation V1, v0.1.33), oos_statistical_reviews
+        # (OOS Statistical Review V1, v0.1.34), and research_observations/
+        # research_decisions/research_conclusions (Research Notebook v1,
+        # the redesign's provenance/methodology layer) are all defined in
+        # the same schema file (app/storage/db.py) as everything else here
+        # -- get_connection() creates the whole schema in one
         # executescript() call, so any table it knows about shows up
         # the moment a connection is opened, not just the ones this
         # particular pipeline test exercises.
@@ -306,6 +308,9 @@ class TestRawStorage:
             "backtest_signals",
             "oos_partitions",
             "experiment_freeze_snapshots",
+            "research_observations",
+            "research_decisions",
+            "research_conclusions",
             "oos_evaluations",
             "oos_evaluation_signals",
             "experiment_oos_periods",

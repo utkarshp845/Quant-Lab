@@ -1,8 +1,10 @@
 import { useMemo, useState } from "react";
 import { ApiError, createExperiment } from "../../api/client";
+import { InfoDisclosure } from "../InfoDisclosure";
 import type { Timeframe } from "../../types/marketData";
 import type { ConditionOperator, Experiment, ExperimentCreateRequest, FeatureCondition } from "../../types/research";
 import { ConditionBuilder } from "./ConditionBuilder";
+import { ObservationPicker } from "./ObservationPicker";
 import { OutcomeBuilder } from "./OutcomeBuilder";
 import { dateRangeWarnings } from "./researchWarnings";
 import { WarningsPanel } from "./WarningsPanel";
@@ -41,6 +43,15 @@ export interface ExperimentFormPrefill {
   outcomeHorizon: number;
   outcomeOperator: ConditionOperator;
   outcomeThreshold: number;
+  expected_direction?: string | null;
+  expected_behavior?: string | null;
+  rationale?: string | null;
+  invalidation_criteria?: string | null;
+  originating_observation_id?: string | null;
+  design_group_id?: string | null;
+  candidate_label?: string | null;
+  parent_experiment_id?: string | null;
+  version_label?: string | null;
 }
 
 /** Builds a form-shaped prefill from an existing Experiment -- used by
@@ -63,7 +74,35 @@ export function prefillFromExperiment(experiment: Experiment): ExperimentFormPre
     outcomeHorizon: experiment.outcome.horizon_minutes,
     outcomeOperator: experiment.outcome.operator,
     outcomeThreshold: experiment.outcome.threshold,
+    expected_direction: experiment.expected_direction,
+    expected_behavior: experiment.expected_behavior,
+    rationale: experiment.rationale,
+    invalidation_criteria: experiment.invalidation_criteria,
+    originating_observation_id: experiment.originating_observation_id,
   };
+}
+
+/** Prefill for the "new version" flow (spec section 10): same
+ * research-defining starting point as `prefillFromExperiment`, but
+ * linked to its parent via `parent_experiment_id`/`version_label`
+ * instead of being an unrelated duplicate -- see
+ * components/research/ExperimentVersions.tsx. */
+export function prefillAsNewVersion(experiment: Experiment, versionLabel: string): ExperimentFormPrefill {
+  return {
+    ...prefillFromExperiment(experiment),
+    name: versionLabel ? `${experiment.name} (${versionLabel})` : `${experiment.name} (new version)`,
+    parent_experiment_id: experiment.id,
+    version_label: versionLabel,
+    design_group_id: experiment.design_group_id,
+  };
+}
+
+/** Prefill for the "add another candidate" flow (spec section 8):
+ * shares `design_group_id` with its siblings but starts from a BLANK
+ * definition -- a candidate is a genuinely different operationalization
+ * of the same hypothesis, not a copy of another candidate's conditions. */
+export function prefillAsCandidate(base: ExperimentFormPrefill, designGroupId: string, candidateLabel: string): ExperimentFormPrefill {
+  return { ...base, name: `${base.name || "Candidate"} ${candidateLabel}`, design_group_id: designGroupId, candidate_label: candidateLabel };
 }
 
 const BLANK_PREFILL: ExperimentFormPrefill = {
@@ -79,6 +118,16 @@ const BLANK_PREFILL: ExperimentFormPrefill = {
   outcomeOperator: "<=",
   outcomeThreshold: -0.005,
 };
+
+/** Prefill for Market State Explorer's "Use this feature in Research"
+ * action (spec section 13) -- starts from the same blank defaults,
+ * with the given feature_id as the starter condition (operator/value
+ * are placeholders the user is expected to adjust; there is no single
+ * generically-correct threshold across a vocabulary spanning returns,
+ * raw volume, and percentiles). */
+export function prefillWithFeature(featureId: string): ExperimentFormPrefill {
+  return { ...BLANK_PREFILL, conditions: [{ feature_id: featureId, operator: ">", value: 0 }] };
+}
 
 export function ExperimentForm({
   prefill,
@@ -108,6 +157,23 @@ export function ExperimentForm({
     threshold: initial.outcomeThreshold,
   });
 
+  // Research Notebook v1 -- structured hypothesis (spec section 7),
+  // observation link (section 6), and versioning links (sections 8/10).
+  // All optional; `parent_experiment_id`/`design_group_id` are usually
+  // set programmatically (prefillAsNewVersion/prefillAsCandidate), not
+  // typed by hand, but stay editable here for the one-off case.
+  const [expectedDirection, setExpectedDirection] = useState(initial.expected_direction ?? "");
+  const [expectedBehavior, setExpectedBehavior] = useState(initial.expected_behavior ?? "");
+  const [rationale, setRationale] = useState(initial.rationale ?? "");
+  const [invalidationCriteria, setInvalidationCriteria] = useState(initial.invalidation_criteria ?? "");
+  const [originatingObservationId, setOriginatingObservationId] = useState<string | null>(
+    initial.originating_observation_id ?? null,
+  );
+  const [designGroupId, setDesignGroupId] = useState(initial.design_group_id ?? "");
+  const [candidateLabel, setCandidateLabel] = useState(initial.candidate_label ?? "");
+  const parentExperimentId = initial.parent_experiment_id ?? null;
+  const [versionLabel, setVersionLabel] = useState(initial.version_label ?? "");
+
   const [submitting, setSubmitting] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [fieldErrors, setFieldErrors] = useState<string[]>([]);
@@ -135,6 +201,15 @@ export function ExperimentForm({
       provider,
       conditions,
       outcome,
+      expected_direction: expectedDirection.trim() || null,
+      expected_behavior: expectedBehavior.trim() || null,
+      rationale: rationale.trim() || null,
+      invalidation_criteria: invalidationCriteria.trim() || null,
+      originating_observation_id: originatingObservationId,
+      design_group_id: designGroupId.trim() || null,
+      candidate_label: candidateLabel.trim() || null,
+      parent_experiment_id: parentExperimentId,
+      version_label: versionLabel.trim() || null,
     };
     try {
       const experiment = await createExperiment(request);
@@ -153,13 +228,23 @@ export function ExperimentForm({
 
   return (
     <form className="section experiment-form" onSubmit={handleSubmit}>
-      <h2 className="section-title">{prefill ? "Duplicate experiment" : "New experiment"}</h2>
+      <h2 className="section-title">
+        {parentExperimentId
+          ? "New version of experiment"
+          : prefill && initial.name.trim() !== ""
+            ? "Duplicate experiment"
+            : "New experiment"}
+      </h2>
 
       <label className="field">
         <span className="field-label">Name</span>
         <input value={name} onChange={(e) => setName(e.target.value)} placeholder="TSLA Early Selling Continuation" />
       </label>
 
+      <h3 className="experiment-form-subheading">Observe</h3>
+      <ObservationPicker symbol={symbol} selectedId={originatingObservationId} onSelect={setOriginatingObservationId} />
+
+      <h3 className="experiment-form-subheading">Hypothesize</h3>
       <label className="field">
         <span className="field-label">Hypothesis</span>
         <textarea
@@ -170,6 +255,73 @@ export function ExperimentForm({
           placeholder="When TSLA declines >= 1% during the first 30 minutes, it declines another >= 0.5% during the next 60 minutes."
         />
       </label>
+
+      <InfoDisclosure title="+ Structured hypothesis (direction, rationale, invalidation)">
+        <p className="field-hint">
+          Optional, but a hypothesis is stronger when it says what would prove it WRONG, not just what
+          you expect.
+        </p>
+        <label className="field">
+          <span className="field-label">Expected direction</span>
+          <input
+            value={expectedDirection}
+            onChange={(e) => setExpectedDirection(e.target.value)}
+            placeholder="e.g. down (continuation), up (reversal)"
+          />
+        </label>
+        <label className="field">
+          <span className="field-label">Expected behavior</span>
+          <input
+            value={expectedBehavior}
+            onChange={(e) => setExpectedBehavior(e.target.value)}
+            placeholder="e.g. continuation of the initial move, not mean reversion"
+          />
+        </label>
+        <label className="field">
+          <span className="field-label">Rationale</span>
+          <textarea
+            rows={2}
+            value={rationale}
+            onChange={(e) => setRationale(e.target.value)}
+            placeholder="Why might this pattern exist? What market mechanism would produce it?"
+          />
+        </label>
+        <label className="field">
+          <span className="field-label">Invalidation criteria</span>
+          <textarea
+            rows={2}
+            value={invalidationCriteria}
+            onChange={(e) => setInvalidationCriteria(e.target.value)}
+            placeholder="What result would make you conclude this hypothesis is wrong?"
+          />
+        </label>
+      </InfoDisclosure>
+
+      <InfoDisclosure title="+ Design group / versioning">
+        <p className="field-hint">
+          Comparing this against other candidate definitions of the same hypothesis? Give them the same
+          design group id (any short label you choose) and a distinct candidate label (A/B/C…) --
+          see the design group panel to compare and record which one you pick, before running any of
+          them.
+        </p>
+        <div className="experiment-form-row">
+          <label className="field">
+            <span className="field-label">Design group id</span>
+            <input value={designGroupId} onChange={(e) => setDesignGroupId(e.target.value)} placeholder="e.g. vwap-reclaim-candidates" />
+          </label>
+          <label className="field">
+            <span className="field-label">Candidate label</span>
+            <input value={candidateLabel} onChange={(e) => setCandidateLabel(e.target.value)} placeholder="A" />
+          </label>
+          <label className="field">
+            <span className="field-label">Version label</span>
+            <input value={versionLabel} onChange={(e) => setVersionLabel(e.target.value)} placeholder="2A" />
+          </label>
+        </div>
+        {parentExperimentId && (
+          <p className="experiment-form-note">This will be recorded as a new version of an existing experiment.</p>
+        )}
+      </InfoDisclosure>
 
       <div className="experiment-form-row">
         <label className="field">
@@ -225,7 +377,9 @@ export function ExperimentForm({
 
       <WarningsPanel warnings={warnings} />
 
-      <h3 className="experiment-form-subheading">Conditions (AND)</h3>
+      <h3 className="experiment-form-subheading">Define</h3>
+      <p className="field-hint">The exact, deterministic rules the machine will execute -- see "why did this qualify?" per event once this has run.</p>
+      <h4 className="experiment-form-subheading">Conditions (AND)</h4>
       <ConditionBuilder conditions={conditions} onChange={setConditions} />
 
       <h3 className="experiment-form-subheading">Outcome</h3>

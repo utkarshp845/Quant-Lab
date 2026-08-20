@@ -56,8 +56,10 @@ def save_experiment(experiment: Experiment, *, db_path: str | Path | None = None
                     (id, name, hypothesis, symbol, start_date, end_date, timeframe, provider,
                      conditions_json, outcome_json, feature_contract_version, status, created_at,
                      completed_at, results_json, error_message, lifecycle_state, oos_partition_id,
-                     hypothesis_hash, frozen_at, archived_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     hypothesis_hash, frozen_at, archived_at, expected_direction, expected_behavior,
+                     rationale, invalidation_criteria, originating_observation_id, design_group_id,
+                     candidate_label, parent_experiment_id, version_label)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     experiment.id,
@@ -81,6 +83,15 @@ def save_experiment(experiment: Experiment, *, db_path: str | Path | None = None
                     experiment.hypothesis_hash,
                     experiment.frozen_at.isoformat() if experiment.frozen_at else None,
                     experiment.archived_at.isoformat() if experiment.archived_at else None,
+                    experiment.expected_direction,
+                    experiment.expected_behavior,
+                    experiment.rationale,
+                    experiment.invalidation_criteria,
+                    experiment.originating_observation_id,
+                    experiment.design_group_id,
+                    experiment.candidate_label,
+                    experiment.parent_experiment_id,
+                    experiment.version_label,
                 ),
             )
     finally:
@@ -367,6 +378,24 @@ def _row_to_experiment(row) -> Experiment:
         hypothesis_hash=row["hypothesis_hash"],
         frozen_at=datetime.fromisoformat(row["frozen_at"]) if row["frozen_at"] else None,
         archived_at=datetime.fromisoformat(row["archived_at"]) if row["archived_at"] else None,
+        # Research Notebook v1 -- NULL on any row created before this
+        # version (or that never set them), same "absent means never
+        # provided, not fabricated" convention as every other nullable
+        # column here. sqlite3.Row supports [] but not .get(), and a
+        # row from a database that hasn't been migrated forward yet
+        # (impossible in practice -- get_connection() always migrates
+        # before returning a connection, but keeping this narrow rather
+        # than assuming) would KeyError on a bare row["..."]; keys()
+        # check keeps this a plain, safe read either way.
+        expected_direction=row["expected_direction"] if "expected_direction" in row.keys() else None,
+        expected_behavior=row["expected_behavior"] if "expected_behavior" in row.keys() else None,
+        rationale=row["rationale"] if "rationale" in row.keys() else None,
+        invalidation_criteria=row["invalidation_criteria"] if "invalidation_criteria" in row.keys() else None,
+        originating_observation_id=row["originating_observation_id"] if "originating_observation_id" in row.keys() else None,
+        design_group_id=row["design_group_id"] if "design_group_id" in row.keys() else None,
+        candidate_label=row["candidate_label"] if "candidate_label" in row.keys() else None,
+        parent_experiment_id=row["parent_experiment_id"] if "parent_experiment_id" in row.keys() else None,
+        version_label=row["version_label"] if "version_label" in row.keys() else None,
     )
 
 

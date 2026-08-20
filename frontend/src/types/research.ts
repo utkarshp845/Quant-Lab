@@ -75,6 +75,14 @@ export interface ExperimentEventsResponse {
   events: ExperimentEvent[];
 }
 
+// Experiment Freeze & Provenance v1 (backend v0.1.30) -- a SECOND,
+// independent lifecycle axis from ExperimentStatus above: whether the
+// experiment's own HYPOTHESIS DEFINITION has been frozen for OOS
+// evaluation. DRAFT -> FROZEN -> OOS_EVALUATED -> ARCHIVED (FROZEN ->
+// ARCHIVED also allowed). See backend/app/models/research.py::
+// ExperimentLifecycleState and backend/app/research/lifecycle.py.
+export type ExperimentLifecycleState = "draft" | "frozen" | "oos_evaluated" | "archived";
+
 export interface ExperimentCreateRequest {
   name: string;
   hypothesis: string;
@@ -85,6 +93,21 @@ export interface ExperimentCreateRequest {
   provider: string;
   conditions: FeatureCondition[]; // at least one, AND-combined
   outcome: Outcome;
+  // Research Notebook v1 -- all optional/additive (backend/app/models/
+  // research_notebook.py's own docstring on ExperimentCreateRequest).
+  // Structured hypothesis fields (spec section 7):
+  expected_direction?: string | null;
+  expected_behavior?: string | null;
+  rationale?: string | null;
+  invalidation_criteria?: string | null;
+  originating_observation_id?: string | null;
+  // Versioning links (spec sections 8/10) -- a candidate considered
+  // alongside others shares design_group_id/candidate_label; a new
+  // version of a locked experiment sets parent_experiment_id/version_label.
+  design_group_id?: string | null;
+  candidate_label?: string | null;
+  parent_experiment_id?: string | null;
+  version_label?: string | null;
 }
 
 export interface Experiment {
@@ -104,4 +127,18 @@ export interface Experiment {
   completed_at: string | null;
   results: ExperimentResults | null;
   error_message: string | null;
+  lifecycle_state: ExperimentLifecycleState;
+  oos_partition_id: string | null;
+  hypothesis_hash: string | null;
+  frozen_at: string | null;
+  archived_at: string | null;
+  expected_direction: string | null;
+  expected_behavior: string | null;
+  rationale: string | null;
+  invalidation_criteria: string | null;
+  originating_observation_id: string | null;
+  design_group_id: string | null;
+  candidate_label: string | null;
+  parent_experiment_id: string | null;
+  version_label: string | null;
 }
