@@ -1,9 +1,10 @@
-import { useState } from "react";
-import { ApiError, computeFeatures, getFeatures } from "../api/client";
+import { useEffect, useState } from "react";
+import { ApiError, computeFeatures, getFeatures, getStoredHistoricalBars, listExperiments } from "../api/client";
 import type { FeatureField } from "../components/features/FeatureGroupCard";
 import { FeatureGroupCard } from "../components/features/FeatureGroupCard";
 import type { FeatureRecord } from "../types/features";
-import type { Timeframe } from "../types/marketData";
+import type { HistoricalDataProvider, Timeframe } from "../types/marketData";
+import { fmtNumberOrDash } from "../utils/researchFormat";
 
 const TIMEFRAMES: Timeframe[] = ["1m", "5m", "15m", "1h", "1d"];
 const PROVIDERS = [
@@ -17,17 +18,26 @@ function todayIso(): string {
   return new Date().toISOString().slice(0, 10);
 }
 
-/** Feature Explorer -- an inspection/debugging tool (per this
- * feature's own scope note), not the primary research workflow: pick
- * a symbol/date/timeframe/provider, load whichever bars in that day
+/** Market State Explorer (spec section 13 -- kept, repositioned from
+ * "Feature Explorer"; the nav item stays "Features" per the simple
+ * RESEARCH/DATA/FEATURES/CALCULATOR structure, but this page's own
+ * framing answers "what was happening in the market?"): pick a
+ * symbol/date/timeframe/provider, load whichever bars in that day
  * already have persisted FeatureRecords (GET /api/features/{symbol}),
  * offering to compute them (POST /api/features/compute) if none exist
- * yet, then pick one exact bar's timestamp to inspect every feature
- * value grouped exactly as the backend groups them (Price/Volume/
- * Volatility/Market Context/Price Position). Every number shown here
- * came directly from the backend -- nothing is computed client-side.
+ * yet, then pick one exact bar's timestamp to inspect RAW DATA (the
+ * underlying OHLCV bar, GET /api/features's own sibling historical-
+ * bars read) alongside every DERIVED feature value, grouped exactly as
+ * the backend groups them (Price/Volume/Volatility/Market Context/
+ * Price Position) -- kept visually separate per spec section 13's own
+ * "never make derived values look like raw market data" rule. Every
+ * number shown here came directly from the backend -- nothing is
+ * computed client-side. Each feature row also shows whether/how many
+ * Research experiments already use it, and a "Use this feature in
+ * Research" action that navigates to Research prefilled with it --
+ * referencing the existing feature, never duplicating it.
  */
-export function FeatureExplorerPage() {
+export function FeatureExplorerPage({ onUseInResearch }: { onUseInResearch: (featureId: string) => void }) {
   const [symbol, setSymbol] = useState("TSLA");
   const [date, setDate] = useState(todayIso());
   const [timeframe, setTimeframe] = useState<Timeframe>("5m");
@@ -42,6 +52,50 @@ export function FeatureExplorerPage() {
   const [barsSeenButNoFeatures, setBarsSeenButNoFeatures] = useState<number | null>(null);
 
   const [selectedTimestamp, setSelectedTimestamp] = useState<string | null>(null);
+  const [rawBars, setRawBars] = useState<Record<string, { open: number; high: number; low: number; close: number; volume: number }>>({});
+  const [experimentsUsingFeature, setExperimentsUsingFeature] = useState<Record<string, number>>({});
+
+  // RESEARCH column (spec section 13): how many saved experiments
+  // reference each feature_id in their own conditions -- fetched once,
+  // read-only, never re-derives anything Research itself already owns.
+  useEffect(() => {
+    listExperiments()
+      .then((experiments) => {
+        const counts: Record<string, number> = {};
+        for (const experiment of experiments) {
+          for (const condition of experiment.conditions) {
+            counts[condition.feature_id] = (counts[condition.feature_id] ?? 0) + 1;
+          }
+        }
+        setExperimentsUsingFeature(counts);
+      })
+      .catch(() => setExperimentsUsingFeature({}));
+  }, []);
+
+  // RAW DATA (spec section 13): the underlying OHLCV bar for whichever
+  // timestamps are currently loaded -- a sibling read of the same
+  // already-saved historical_bars table Feature Engine computed these
+  // FeatureRecords from, never re-derived from the feature values.
+  useEffect(() => {
+    if (!records || records.length === 0) {
+      setRawBars({});
+      return;
+    }
+    getStoredHistoricalBars({
+      symbol: symbol.trim().toUpperCase(),
+      start: date,
+      end: date,
+      timeframe,
+      provider: provider as HistoricalDataProvider,
+    })
+      .then((res) => {
+        const byTimestamp: Record<string, { open: number; high: number; low: number; close: number; volume: number }> = {};
+        for (const bar of res.bars) byTimestamp[bar.timestamp] = bar;
+        setRawBars(byTimestamp);
+      })
+      .catch(() => setRawBars({}));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [records]);
 
   async function handleLoad() {
     setLoadLoading(true);
@@ -89,11 +143,12 @@ export function FeatureExplorerPage() {
   return (
     <div className="page feature-explorer-page">
       <header className="page-header">
-        <h1>Feature Explorer</h1>
+        <h1>Market State Explorer</h1>
         <p className="tagline">
-          Inspect the exact, already-persisted feature values Feature Engine v1 computed for one historical bar.
-          Read-only and debugging-oriented -- for building and running experiments, use{" "}
-          <strong>Research</strong> instead.
+          "What was happening in the market?" -- raw OHLCV alongside every derived Feature Engine value
+          for one exact historical bar, kept visually distinct. Read-only and inspection-oriented -- for
+          building and running experiments, use <strong>Research</strong> instead (each feature row below
+          links there directly).
         </p>
       </header>
 
@@ -194,6 +249,7 @@ export function FeatureExplorerPage() {
       {selected && (
         <>
           <section className="section feature-explorer-dataset-banner">
+            <h2 className="section-title">Raw data</h2>
             <dl className="feature-explorer-dataset-grid">
               <div>
                 <dt>Symbol</dt>
@@ -213,6 +269,32 @@ export function FeatureExplorerPage() {
                 <dt>Source dataset (provider)</dt>
                 <dd>{selected.provider}</dd>
               </div>
+              {rawBars[selected.timestamp] ? (
+                <>
+                  <div>
+                    <dt>OHLC</dt>
+                    <dd>
+                      {fmtNumberOrDash(rawBars[selected.timestamp].open, 2)} / {fmtNumberOrDash(rawBars[selected.timestamp].high, 2)} /{" "}
+                      {fmtNumberOrDash(rawBars[selected.timestamp].low, 2)} / {fmtNumberOrDash(rawBars[selected.timestamp].close, 2)}
+                    </dd>
+                  </div>
+                  <div>
+                    <dt>Volume</dt>
+                    <dd>{rawBars[selected.timestamp].volume.toLocaleString()}</dd>
+                  </div>
+                </>
+              ) : (
+                <div>
+                  <dt>OHLCV</dt>
+                  <dd className="research-gap-note">Not available (bar may have been removed since features were computed).</dd>
+                </div>
+              )}
+            </dl>
+          </section>
+
+          <section className="section feature-explorer-dataset-banner">
+            <h2 className="section-title">Feature computation metadata</h2>
+            <dl className="feature-explorer-dataset-grid">
               <div>
                 <dt>Computed at</dt>
                 <dd>
@@ -228,38 +310,46 @@ export function FeatureExplorerPage() {
 
           <FeatureGroupCard
             title="Price"
+            experimentsUsingFeature={experimentsUsingFeature}
+            onUseInResearch={onUseInResearch}
             fields={
               [
-                { label: "Return (5m)", value: selected.price.return_5m, format: "percent" },
-                { label: "Return (15m)", value: selected.price.return_15m, format: "percent" },
-                { label: "Return (30m)", value: selected.price.return_30m, format: "percent" },
-                { label: "Return (60m)", value: selected.price.return_60m, format: "percent" },
+                { label: "Return (5m)", value: selected.price.return_5m, format: "percent", featureId: "price.return_5m" },
+                { label: "Return (15m)", value: selected.price.return_15m, format: "percent", featureId: "price.return_15m" },
+                { label: "Return (30m)", value: selected.price.return_30m, format: "percent", featureId: "price.return_30m" },
+                { label: "Return (60m)", value: selected.price.return_60m, format: "percent", featureId: "price.return_60m" },
               ] as FeatureField[]
             }
           />
           <FeatureGroupCard
             title="Volume"
+            experimentsUsingFeature={experimentsUsingFeature}
+            onUseInResearch={onUseInResearch}
             fields={
               [
-                { label: "Volume", value: selected.volume.volume, format: "int" },
-                { label: "Relative Volume (RVOL)", value: selected.volume.relative_volume, format: "number" },
-                { label: "Volume Acceleration", value: selected.volume.volume_acceleration, format: "number" },
+                { label: "Volume", value: selected.volume.volume, format: "int", featureId: "volume.volume" },
+                { label: "Relative Volume (RVOL)", value: selected.volume.relative_volume, format: "number", featureId: "volume.relative_volume" },
+                { label: "Volume Acceleration", value: selected.volume.volume_acceleration, format: "number", featureId: "volume.volume_acceleration" },
               ] as FeatureField[]
             }
           />
           <FeatureGroupCard
             title="Volatility"
+            experimentsUsingFeature={experimentsUsingFeature}
+            onUseInResearch={onUseInResearch}
             fields={
               [
-                { label: "Realized Volatility (annualized)", value: selected.volatility.realized_volatility, format: "percent" },
-                { label: "ATR (14-bar)", value: selected.volatility.atr, format: "number" },
-                { label: "Volatility Ratio", value: selected.volatility.volatility_ratio, format: "number" },
-                { label: "Volatility Percentile (252-session)", value: selected.volatility.volatility_percentile, format: "percent" },
+                { label: "Realized Volatility (annualized)", value: selected.volatility.realized_volatility, format: "percent", featureId: "volatility.realized_volatility" },
+                { label: "ATR (14-bar)", value: selected.volatility.atr, format: "number", featureId: "volatility.atr" },
+                { label: "Volatility Ratio", value: selected.volatility.volatility_ratio, format: "number", featureId: "volatility.volatility_ratio" },
+                { label: "Volatility Percentile (252-session)", value: selected.volatility.volatility_percentile, format: "percent", featureId: "volatility.volatility_percentile" },
               ] as FeatureField[]
             }
           />
           <FeatureGroupCard
             title="Market Context"
+            experimentsUsingFeature={experimentsUsingFeature}
+            onUseInResearch={onUseInResearch}
             subtitle={
               selected.market_context === null
                 ? "This symbol is not configured for SPY/QQQ market context."
@@ -269,44 +359,51 @@ export function FeatureExplorerPage() {
               selected.market_context === null
                 ? []
                 : ([
-                    { label: "SPY Return (5m)", value: selected.market_context.spy_return_5m, format: "percent" },
-                    { label: "SPY Return (60m)", value: selected.market_context.spy_return_60m, format: "percent" },
-                    { label: "QQQ Return (5m)", value: selected.market_context.qqq_return_5m, format: "percent" },
-                    { label: "QQQ Return (60m)", value: selected.market_context.qqq_return_60m, format: "percent" },
+                    { label: "SPY Return (5m)", value: selected.market_context.spy_return_5m, format: "percent", featureId: "market_context.spy_return_5m" },
+                    { label: "SPY Return (60m)", value: selected.market_context.spy_return_60m, format: "percent", featureId: "market_context.spy_return_60m" },
+                    { label: "QQQ Return (5m)", value: selected.market_context.qqq_return_5m, format: "percent", featureId: "market_context.qqq_return_5m" },
+                    { label: "QQQ Return (60m)", value: selected.market_context.qqq_return_60m, format: "percent", featureId: "market_context.qqq_return_60m" },
                     {
                       label: "Relative Strength vs SPY (5m)",
                       value: selected.market_context.relative_strength_spy_5m,
                       format: "percent",
+                      featureId: "market_context.relative_strength_spy_5m",
                     },
                     {
                       label: "Relative Strength vs SPY (60m)",
                       value: selected.market_context.relative_strength_spy_60m,
                       format: "percent",
+                      featureId: "market_context.relative_strength_spy_60m",
                     },
                     {
                       label: "Relative Strength vs QQQ (5m)",
                       value: selected.market_context.relative_strength_qqq_5m,
                       format: "percent",
+                      featureId: "market_context.relative_strength_qqq_5m",
                     },
                     {
                       label: "Relative Strength vs QQQ (60m)",
                       value: selected.market_context.relative_strength_qqq_60m,
                       format: "percent",
+                      featureId: "market_context.relative_strength_qqq_60m",
                     },
                   ] as FeatureField[])
             }
           />
           <FeatureGroupCard
             title="Price Position"
+            experimentsUsingFeature={experimentsUsingFeature}
+            onUseInResearch={onUseInResearch}
             fields={
               [
-                { label: "Distance from VWAP", value: selected.price_position.vwap_distance, format: "percent" },
-                { label: "Distance from 20-bar MA", value: selected.price_position.ma20_distance, format: "percent" },
-                { label: "Distance from 50-bar MA", value: selected.price_position.ma50_distance, format: "percent" },
+                { label: "Distance from VWAP", value: selected.price_position.vwap_distance, format: "percent", featureId: "price_position.vwap_distance" },
+                { label: "Distance from 20-bar MA", value: selected.price_position.ma20_distance, format: "percent", featureId: "price_position.ma20_distance" },
+                { label: "Distance from 50-bar MA", value: selected.price_position.ma50_distance, format: "percent", featureId: "price_position.ma50_distance" },
                 {
                   label: "Intraday Range Position",
                   value: selected.price_position.intraday_range_position,
                   format: "percent",
+                  featureId: "price_position.intraday_range_position",
                 },
               ] as FeatureField[]
             }

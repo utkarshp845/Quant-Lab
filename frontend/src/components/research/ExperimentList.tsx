@@ -8,6 +8,16 @@ const STATUS_LABELS: Record<Experiment["status"], string> = {
   failed: "Failed",
 };
 
+// Experiment Freeze & Provenance v1's SECOND, independent lifecycle
+// axis (types/research.ts::ExperimentLifecycleState) -- whether the
+// HYPOTHESIS DEFINITION is locked, not whether a run has executed.
+const LIFECYCLE_LABELS: Record<Experiment["lifecycle_state"], string> = {
+  draft: "Unlocked",
+  frozen: "Locked",
+  oos_evaluated: "OOS evaluated",
+  archived: "Archived",
+};
+
 export function ExperimentList({
   experiments,
   onView,
@@ -72,6 +82,7 @@ export function ExperimentList({
               <th>Symbol</th>
               <th>Date range</th>
               <th>Status</th>
+              <th>Lock</th>
               <th>Signals</th>
               <th>Success rate</th>
               <th aria-label="Actions" />
@@ -96,6 +107,11 @@ export function ExperimentList({
                 </td>
                 <td>
                   <span className={`experiment-status experiment-status-${exp.status}`}>{STATUS_LABELS[exp.status]}</span>
+                </td>
+                <td>
+                  <span className={`experiment-lifecycle experiment-lifecycle-${exp.lifecycle_state}`}>
+                    {LIFECYCLE_LABELS[exp.lifecycle_state]}
+                  </span>
                 </td>
                 <td>{exp.results ? exp.results.total_events : "—"}</td>
                 <td>

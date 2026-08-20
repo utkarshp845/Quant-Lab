@@ -1765,10 +1765,11 @@ body {
 
 .feature-group-grid {
   display: grid;
-  grid-template-columns: 1fr auto;
+  grid-template-columns: 1fr auto auto;
   row-gap: 6px;
   column-gap: 16px;
   margin: 0;
+  align-items: center;
 }
 
 .feature-group-row {
@@ -1790,6 +1791,25 @@ body {
 .feature-value-null {
   color: var(--color-text-muted);
   font-style: italic;
+}
+
+.feature-group-research-cell {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-family: inherit !important;
+}
+
+.feature-group-usage-badge {
+  font-size: 0.68rem;
+  color: var(--color-text-muted);
+  white-space: nowrap;
+}
+
+.feature-group-use-btn {
+  font-size: 0.72rem !important;
+  padding: 3px 9px !important;
+  white-space: nowrap;
 }
 
 /* ==========================================================
@@ -2045,4 +2065,546 @@ body {
 
 .research-interpretation-list li {
   margin-bottom: 8px;
+}
+
+/* ==========================================================
+   Redesign: research-centered workbench. Experiment lifecycle
+   badge (Experiment Freeze & Provenance v1's second axis --
+   independent of `.experiment-status`, which tracks a RUN, not
+   the hypothesis lock) and the Research Pipeline stepper
+   (components/research/ResearchPipeline.tsx) -- the primary
+   in-experiment navigation model, spec section 3.
+   ========================================================== */
+
+.experiment-lifecycle {
+  font-size: 0.75rem;
+  font-weight: 700;
+  padding: 2px 8px;
+  border-radius: 999px;
+}
+
+.experiment-lifecycle-draft {
+  background: var(--color-border);
+  color: var(--color-text-muted);
+}
+
+.experiment-lifecycle-frozen {
+  background: var(--color-buy-bg);
+  color: var(--color-buy);
+}
+
+.experiment-lifecycle-oos_evaluated {
+  background: var(--color-accent);
+  color: white;
+}
+
+.experiment-lifecycle-archived {
+  background: #eee;
+  color: #888;
+}
+
+.research-pipeline {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  padding: 18px 20px;
+  margin-bottom: 18px;
+}
+
+.research-pipeline-loading {
+  color: var(--color-text-muted);
+  font-size: 0.88rem;
+}
+
+.research-pipeline-next-action {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 8px;
+  background: var(--color-buy-bg);
+  border-radius: 8px;
+  padding: 10px 14px;
+  margin-bottom: 16px;
+}
+
+.research-pipeline-next-action-label {
+  font-weight: 700;
+  font-size: 0.8rem;
+  color: var(--color-buy);
+  white-space: nowrap;
+}
+
+.research-pipeline-next-action-text {
+  font-size: 0.9rem;
+  color: var(--color-text);
+}
+
+.research-pipeline-stages {
+  list-style: none;
+  margin: 0 0 16px;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+/* Compound selectors (.research-pipeline-stage.research-pipeline-stage-X,
+   specificity 0,2,0) deliberately -- `.research-workspace button`
+   (0,1,1) would otherwise beat a single `.research-pipeline-stage-X`
+   class (0,1,0) and every stage chip would render as that shared
+   purple button style regardless of status. */
+.research-workspace .research-pipeline-stage {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  border: 1px solid var(--color-border);
+  background: var(--color-bg);
+  border-radius: 999px;
+  padding: 5px 11px;
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--color-text-muted);
+  cursor: pointer;
+}
+
+.research-pipeline-stage-symbol {
+  font-size: 0.85em;
+}
+
+.research-workspace .research-pipeline-stage.research-pipeline-stage-complete {
+  border-color: var(--color-profit);
+  color: var(--color-profit);
+  background: var(--color-profit-bg);
+}
+
+.research-workspace .research-pipeline-stage.research-pipeline-stage-in_progress {
+  border-color: var(--color-buy);
+  color: var(--color-buy);
+  background: var(--color-buy-bg);
+}
+
+.research-workspace .research-pipeline-stage.research-pipeline-stage-warning {
+  border-color: var(--color-sell);
+  color: var(--color-sell);
+  background: var(--color-sell-bg);
+}
+
+.research-workspace .research-pipeline-stage.research-pipeline-stage-blocked {
+  border-color: var(--color-loss);
+  color: var(--color-loss);
+  background: var(--color-loss-bg);
+}
+
+.research-pipeline-stage.research-pipeline-stage-focused {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 1px;
+}
+
+.research-pipeline-stage.research-pipeline-stage-current {
+  font-weight: 800;
+}
+
+.research-pipeline-detail {
+  border-top: 1px solid var(--color-border);
+  padding-top: 14px;
+}
+
+.research-pipeline-detail h3 {
+  margin: 0 0 4px;
+  font-size: 1rem;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.research-pipeline-current-badge {
+  font-size: 0.65rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  background: var(--color-accent);
+  color: white;
+  border-radius: 999px;
+  padding: 2px 8px;
+}
+
+.research-pipeline-purpose {
+  margin: 0 0 12px;
+  color: var(--color-text-muted);
+  font-size: 0.88rem;
+}
+
+.research-pipeline-detail-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 12px;
+  margin: 0 0 8px;
+}
+
+@media (max-width: 780px) {
+  .research-pipeline-detail-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.research-pipeline-detail-grid dt {
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--color-text-muted);
+  margin-bottom: 2px;
+}
+
+.research-pipeline-detail-grid dd {
+  margin: 0;
+  font-size: 0.85rem;
+}
+
+.research-pipeline-status-text {
+  text-transform: capitalize;
+  font-weight: 700;
+}
+
+.research-pipeline-status-complete {
+  color: var(--color-profit);
+}
+
+.research-pipeline-status-in_progress {
+  color: var(--color-buy);
+}
+
+.research-pipeline-status-warning {
+  color: var(--color-sell);
+}
+
+.research-pipeline-status-blocked {
+  color: var(--color-loss);
+}
+
+.research-pipeline-status-not_started {
+  color: var(--color-text-muted);
+}
+
+/* ==========================================================
+   Redesign: Observe/Hypothesize/Design/Lock flow -- progressive
+   disclosure, observation picker, decision log, design group
+   comparison, and version tree.
+   ========================================================== */
+
+.field-hint {
+  margin: 0 0 8px;
+  font-size: 0.8rem;
+  color: var(--color-text-muted);
+}
+
+.info-disclosure {
+  margin-bottom: 14px;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  padding: 10px 14px;
+  background: var(--color-bg);
+}
+
+.info-disclosure summary {
+  cursor: pointer;
+  font-weight: 600;
+  font-size: 0.88rem;
+  color: var(--color-accent);
+}
+
+.info-disclosure-body {
+  margin-top: 10px;
+}
+
+.observation-picker select {
+  width: 100%;
+  margin-bottom: 8px;
+}
+
+.observation-picker-new-btn {
+  background: transparent !important;
+  color: var(--color-accent) !important;
+  border: 1px dashed var(--color-border) !important;
+}
+
+.observation-picker-form {
+  margin-top: 10px;
+  padding: 10px;
+  border: 1px dashed var(--color-border);
+  border-radius: 8px;
+}
+
+.observation-picker-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.decision-log-list {
+  list-style: none;
+  margin: 0 0 16px;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.decision-log-entry {
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  padding: 10px 14px;
+}
+
+.decision-log-entry-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.decision-log-timestamp {
+  font-size: 0.75rem;
+  color: var(--color-text-muted);
+  white-space: nowrap;
+}
+
+.decision-log-reason,
+.decision-log-meta {
+  margin: 4px 0 0;
+  font-size: 0.85rem;
+  color: var(--color-text-muted);
+}
+
+.decision-log-outcome-flag {
+  margin: 6px 0 0;
+  font-size: 0.78rem;
+  font-weight: 700;
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 999px;
+}
+
+.decision-log-outcome-flag-no {
+  background: var(--color-profit-bg);
+  color: var(--color-profit);
+}
+
+.decision-log-outcome-flag-yes {
+  background: var(--color-sell-bg);
+  color: var(--color-sell);
+}
+
+.decision-log-checkboxes {
+  border: none;
+  padding: 0;
+  margin: 0 0 10px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.decision-log-checkboxes legend {
+  width: 100%;
+  font-size: 0.78rem;
+  color: var(--color-text-muted);
+  margin-bottom: 4px;
+}
+
+.decision-log-checkbox {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 0.82rem;
+  font-weight: 400;
+}
+
+.experiment-versions-list {
+  list-style: none;
+  margin: 0 0 12px;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.experiment-versions-list li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.experiment-versions-current {
+  font-weight: 700;
+}
+
+.experiment-versions-link {
+  background: transparent !important;
+  color: var(--color-accent) !important;
+  border: none !important;
+  padding: 0 !important;
+  text-decoration: underline;
+}
+
+.experiment-versions-parent-note {
+  font-size: 0.75rem;
+  color: var(--color-text-muted);
+}
+
+.experiment-versions-diff {
+  margin-bottom: 12px;
+}
+
+/* ==========================================================
+   Redesign: Detect/Measure/Compare/Validate/Conclude + Backtest
+   + lineage drill-down.
+   ========================================================== */
+
+.condition-funnel-row {
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  gap: 12px;
+  align-items: center;
+  padding: 6px 0;
+  border-bottom: 1px dashed var(--color-border);
+  font-size: 0.85rem;
+}
+
+.condition-funnel-count {
+  font-weight: 700;
+  text-align: right;
+  min-width: 60px;
+}
+
+.condition-funnel-pct {
+  color: var(--color-text-muted);
+  text-align: right;
+  min-width: 60px;
+}
+
+.backtest-gap-banner {
+  margin-top: 16px;
+}
+
+.conclusion-card {
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  padding: 10px 14px;
+  margin-bottom: 10px;
+}
+
+.conclusion-card-supported {
+  border-color: var(--color-profit);
+  background: var(--color-profit-bg);
+}
+
+.conclusion-card-rejected {
+  border-color: var(--color-loss);
+  background: var(--color-loss-bg);
+}
+
+.conclusion-card-weakened,
+.conclusion-card-needs_more_data {
+  border-color: var(--color-sell);
+  background: var(--color-sell-bg);
+}
+
+.conclusion-card-inconclusive {
+  border-color: var(--color-border);
+  background: var(--color-bg);
+}
+
+.lineage-view-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.4);
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 40px 20px;
+  overflow-y: auto;
+  z-index: 100;
+}
+
+.lineage-view {
+  background: var(--color-surface);
+  border-radius: var(--radius);
+  padding: 20px 24px;
+  max-width: 640px;
+  width: 100%;
+}
+
+.lineage-chain {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+}
+
+.lineage-step {
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  padding: 10px 14px;
+}
+
+.lineage-step-raw {
+  background: var(--color-bg);
+}
+
+.lineage-step-derived,
+.lineage-step-condition {
+  background: var(--color-buy-bg);
+}
+
+.lineage-step-event {
+  background: var(--color-accent);
+  color: white;
+  border-color: var(--color-accent);
+}
+
+.lineage-step-event code {
+  color: white;
+}
+
+.lineage-step-label {
+  display: block;
+  font-size: 0.68rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin-bottom: 6px;
+  opacity: 0.75;
+}
+
+.lineage-arrow {
+  text-align: center;
+  color: var(--color-text-muted);
+  font-size: 1.1rem;
+  padding: 2px 0;
+}
+
+.lineage-feature-description {
+  font-size: 0.78rem;
+  color: var(--color-text-muted);
+  margin-top: 2px;
+}
+
+.oos-verdict-card {
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  padding: 12px 16px;
+  margin: 10px 0;
+}
+
+.oos-verdict-supported {
+  border-color: var(--color-profit);
+  background: var(--color-profit-bg);
+}
+
+.oos-verdict-not_supported {
+  border-color: var(--color-loss);
+  background: var(--color-loss-bg);
+}
+
+.oos-verdict-inconclusive,
+.oos-verdict-insufficient_data {
+  border-color: var(--color-border);
+  background: var(--color-bg);
 }

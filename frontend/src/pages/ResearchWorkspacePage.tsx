@@ -1,12 +1,20 @@
 import { useEffect, useState } from "react";
-import { ApiError, getExperiment, getExperimentEvents, listExperiments, runExperiment } from "../api/client";
+import { ApiError, freezeExperiment, getExperiment, getExperimentEvents, listExperiments, runExperiment } from "../api/client";
+import { DesignGroupPanel } from "../components/research/DesignGroupPanel";
 import { ExperimentCompare } from "../components/research/ExperimentCompare";
-import { ExperimentForm, prefillFromExperiment, type ExperimentFormPrefill } from "../components/research/ExperimentForm";
+import {
+  ExperimentForm,
+  prefillAsNewVersion,
+  prefillFromExperiment,
+  prefillWithFeature,
+  type ExperimentFormPrefill,
+} from "../components/research/ExperimentForm";
 import { ExperimentList } from "../components/research/ExperimentList";
 import { ExperimentResultsView } from "../components/research/ExperimentResultsView";
+import { ResearchPipeline } from "../components/research/ResearchPipeline";
 import type { Experiment, ExperimentEvent } from "../types/research";
 
-type View = "list" | "form" | "results" | "compare";
+type View = "list" | "form" | "results" | "compare" | "designGroup";
 
 /**
  * The primary experimental workflow (per this feature's own framing --
@@ -17,7 +25,16 @@ type View = "list" | "form" | "results" | "compare";
  * its children only fetch, display, and (for warnings) apply simple
  * threshold heuristics over values already returned.
  */
-export function ResearchWorkspacePage() {
+export function ResearchWorkspacePage({
+  pendingFeatureId,
+  onConsumePendingFeature,
+}: {
+  /** Set by Market State Explorer's "Use this feature in Research"
+   * action (App.tsx) -- when present, opens a new-experiment form
+   * prefilled with a starter condition referencing it. */
+  pendingFeatureId?: string | null;
+  onConsumePendingFeature?: () => void;
+} = {}) {
   const [view, setView] = useState<View>("list");
   const [experiments, setExperiments] = useState<Experiment[] | null>(null);
   const [listError, setListError] = useState<string | null>(null);
@@ -33,9 +50,26 @@ export function ResearchWorkspacePage() {
 
   const [compareExperiments, setCompareExperiments] = useState<[Experiment, Experiment] | null>(null);
 
+  const [designGroupId, setDesignGroupId] = useState<string | null>(null);
+  const [freezing, setFreezing] = useState(false);
+  const [freezeError, setFreezeError] = useState<string | null>(null);
+
+  // Bumped whenever the active experiment's server-side state might
+  // have changed (run, freeze, backtest, ...) so ResearchPipeline
+  // re-fetches pipeline-status instead of showing a stale stage list.
+  const [pipelineRefreshKey, setPipelineRefreshKey] = useState(0);
+
   useEffect(() => {
     reloadExperiments();
   }, []);
+
+  useEffect(() => {
+    if (!pendingFeatureId) return;
+    setFormPrefill(prefillWithFeature(pendingFeatureId));
+    setView("form");
+    onConsumePendingFeature?.();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pendingFeatureId]);
 
   async function reloadExperiments() {
     try {
@@ -115,11 +149,40 @@ export function ResearchWorkspacePage() {
       setActiveExperiment(updated);
       setExperiments((prev) => (prev ?? []).map((e) => (e.id === updated.id ? updated : e)));
       await loadEventsFor(updated);
+      setPipelineRefreshKey((k) => k + 1);
     } catch (err) {
       setRunError(err instanceof ApiError ? err.message : "Could not reach the backend. Is it running on http://localhost:8000?");
     } finally {
       setRunning(false);
     }
+  }
+
+  async function handleFreeze() {
+    if (!activeExperiment) return;
+    setFreezing(true);
+    setFreezeError(null);
+    try {
+      const updated = await freezeExperiment(activeExperiment.id);
+      setActiveExperiment(updated);
+      setExperiments((prev) => (prev ?? []).map((e) => (e.id === updated.id ? updated : e)));
+      setPipelineRefreshKey((k) => k + 1);
+    } catch (err) {
+      setFreezeError(err instanceof ApiError ? err.message : "Could not freeze this experiment.");
+    } finally {
+      setFreezing(false);
+    }
+  }
+
+  function handleNewVersion() {
+    if (!activeExperiment) return;
+    setFormPrefill(prefillAsNewVersion(activeExperiment, ""));
+    setView("form");
+  }
+
+  function handleExperimentUpdated(updated: Experiment) {
+    setActiveExperiment(updated);
+    setExperiments((prev) => (prev ?? []).map((e) => (e.id === updated.id ? updated : e)));
+    setPipelineRefreshKey((k) => k + 1);
   }
 
   async function handleRerunFromList(id: string) {
@@ -143,20 +206,23 @@ export function ResearchWorkspacePage() {
       <header className="page-header">
         <h1>Research</h1>
         <p className="tagline">
-          Define a falsifiable condition/outcome hypothesis, run it against the normalized historical dataset, and
-          see every qualifying signal plus aggregate statistics. Deterministic, reproducible, never modifies
-          historical data. Not backtesting, not a trading signal.
+          The lab's home workspace: observe → hypothesize → design → define → lock → detect →
+          measure → compare → validate → conclude → backtest → OOS. Every stage traces back to real
+          market data; nothing here modifies historical data or fabricates a result.
         </p>
       </header>
 
-      <div className="research-gap-banner">
-        <strong>Scoped to what the Research Engine supports today:</strong> one symbol, any number of
-        conditions ANDed together (each referencing a real Feature Engine value -- see the condition builder's
-        dropdown), one forward-return outcome per experiment. Multi-symbol universes, OR/nested condition
-        groups, percentile statistics, threshold-probability, and segmentation are shown in this UI where
-        they're part of the workflow but are visibly disabled -- each requires a backend extension not built
-        yet, per this workspace's own "no duplicate backend calculations" rule.
-      </div>
+      {view === "list" && (
+        <div className="research-gap-banner">
+          <strong>Scoped to what the Research Engine supports today:</strong> one symbol, any number
+          of conditions ANDed together (each referencing a real Feature Engine value -- see the
+          condition builder's dropdown), one forward-return outcome per experiment. Multi-symbol
+          universes, OR/nested condition groups, percentile statistics, threshold-probability, and
+          segmentation are shown in this UI where they're part of the workflow but are visibly
+          disabled -- each requires a backend extension not built yet, per this workspace's own "no
+          duplicate backend calculations" rule.
+        </div>
+      )}
 
       {view === "list" && (
         <>
@@ -195,6 +261,7 @@ export function ResearchWorkspacePage() {
               ← Back to list
             </button>
           </div>
+          <ResearchPipeline experimentId={activeExperiment.id} refreshKey={pipelineRefreshKey} />
           <ExperimentResultsView
             experiment={activeExperiment}
             events={activeEvents}
@@ -204,12 +271,26 @@ export function ResearchWorkspacePage() {
             runError={runError}
             onRun={handleRun}
             sameSymbolExperimentCount={sameSymbolExperimentCount(activeExperiment.symbol)}
+            freezing={freezing}
+            freezeError={freezeError}
+            onFreeze={handleFreeze}
+            onViewDesignGroup={(id) => {
+              setDesignGroupId(id);
+              setView("designGroup");
+            }}
+            onViewVersion={goToView}
+            onNewVersion={handleNewVersion}
+            onExperimentUpdated={handleExperimentUpdated}
           />
         </>
       )}
 
       {view === "compare" && compareExperiments && (
         <ExperimentCompare left={compareExperiments[0]} right={compareExperiments[1]} onBack={() => setView("list")} />
+      )}
+
+      {view === "designGroup" && designGroupId && (
+        <DesignGroupPanel designGroupId={designGroupId} onBack={() => setView(activeExperiment ? "results" : "list")} />
       )}
     </div>
   );

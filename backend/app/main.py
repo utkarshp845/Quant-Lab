@@ -92,6 +92,10 @@ from app.api.oos_evidence import router as oos_evidence_router
 from app.api.oos_partitions import router as oos_partitions_router
 from app.api.oos_statistical_review import router as oos_statistical_review_router
 from app.api.research import router as research_router
+from app.api.research_lineage import router as research_lineage_router
+from app.api.research_notebook import router as research_notebook_router
+from app.api.research_pipeline import router as research_pipeline_router
+from app.api.statistical_validation import router as statistical_validation_router
 from app.ingestion.auto_ingest import run_ingestion_loop
 
 # v0.1.23: without this, every `app.*` logger.info()/.warning() call in
@@ -180,6 +184,10 @@ app.include_router(experiment_freeze_router, prefix="/api")
 app.include_router(oos_evaluation_router, prefix="/api")
 app.include_router(oos_evidence_router, prefix="/api")
 app.include_router(oos_statistical_review_router, prefix="/api")
+app.include_router(research_notebook_router, prefix="/api")
+app.include_router(research_pipeline_router, prefix="/api")
+app.include_router(research_lineage_router, prefix="/api")
+app.include_router(statistical_validation_router, prefix="/api")
 
 
 @app.get("/api/health")

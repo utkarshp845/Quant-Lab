@@ -208,8 +208,29 @@ CREATE TABLE IF NOT EXISTS experiments (
     oos_partition_id TEXT,
     hypothesis_hash TEXT,
     frozen_at TEXT,
-    archived_at TEXT
+    archived_at TEXT,
+    expected_direction TEXT,
+    expected_behavior TEXT,
+    rationale TEXT,
+    invalidation_criteria TEXT,
+    originating_observation_id TEXT,
+    design_group_id TEXT,
+    candidate_label TEXT,
+    parent_experiment_id TEXT,
+    version_label TEXT
 );
+-- No index on design_group_id/parent_experiment_id: unlike every other
+-- indexed column above, these two are ADDED to an existing pre-Research-
+-- Notebook `experiments` table by an ALTER TABLE migration
+-- (_EXPERIMENTS_NOTEBOOK_MIGRATIONS below), which only runs AFTER this
+-- executescript -- an index on either column here would fail against a
+-- database whose `experiments` table already exists in an older shape
+-- (CREATE TABLE IF NOT EXISTS is a no-op there, so the column genuinely
+-- doesn't exist yet at this point in connection setup). Given this
+-- app's own single-user scale, an unindexed lookup (both call sites --
+-- app/api/research_pipeline.py, app/api/research_notebook.py -- filter
+-- research_repository.list_experiments()'s full result in Python
+-- anyway) costs nothing worth a migration-ordering hazard for.
 
 -- One row per QUALIFYING SIGNAL a run of an experiment found -- see
 -- app/models/research.py::ExperimentEvent's docstring for why
@@ -618,6 +639,87 @@ CREATE TABLE IF NOT EXISTS oos_statistical_reviews (
 );
 CREATE INDEX IF NOT EXISTS idx_oos_statistical_reviews_experiment
     ON oos_statistical_reviews (experiment_id, created_at);
+
+-- Research Notebook v1 (app/models/research_notebook.py, app/storage/
+-- research_notebook_repository.py, app/api/research_notebook.py): the
+-- provenance/methodology layer the redesign audit found entirely
+-- missing -- Observation ("what happened"), Decision (candidate-
+-- selection provenance log), Conclusion (a research verdict that must
+-- reference its own evidence). None of these three tables duplicates
+-- any existing engine's data; they are metadata ABOUT a research
+-- process that already runs on Research v1/Feature Engine v1/
+-- Backtesting v1/Statistical Validation unmodified.
+--
+-- research_observations: one row per Observation. Immutable after
+-- creation -- no update endpoint, matching this app's "no edit
+-- endpoint for a definition" convention. referenced_bar_timestamps_json/
+-- referenced_feature_ids_json are JSON lists (variable length, same
+-- "structured per-row data as JSON text" pattern experiments.conditions_json
+-- already uses).
+CREATE TABLE IF NOT EXISTS research_observations (
+    id TEXT PRIMARY KEY,
+    symbol TEXT NOT NULL,
+    description TEXT NOT NULL,
+    observed_start TEXT NOT NULL,
+    observed_end TEXT NOT NULL,
+    referenced_bar_timestamps_json TEXT NOT NULL,
+    referenced_feature_ids_json TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_research_observations_symbol
+    ON research_observations (symbol, observed_start);
+
+-- research_decisions: one row per decision-log entry, keyed by
+-- design_group_id (a caller-chosen string shared by every candidate
+-- Experiment considered together -- see experiments.design_group_id
+-- below; no separate "design group" table exists because a design
+-- group is nothing more than "these experiments/decisions share this
+-- id", not an entity with its own fields). APPEND-ONLY: no update/
+-- delete function anywhere in research_notebook_repository.py, the
+-- same convention oos_evaluations/oos_statistical_reviews already
+-- apply to "a record of what was decided, once, that must never be
+-- silently rewritten." selection_criteria_json/information_available_json
+-- are JSON lists of caller-supplied strings (e.g. ["sample_size",
+-- "conceptual_validity"]) -- open vocabulary, not a fixed enum, since
+-- the redesign's own worked example uses free-form criteria labels.
+CREATE TABLE IF NOT EXISTS research_decisions (
+    id TEXT PRIMARY KEY,
+    design_group_id TEXT NOT NULL,
+    decision TEXT NOT NULL,
+    reason TEXT NOT NULL,
+    selection_criteria_json TEXT NOT NULL,
+    information_available_json TEXT NOT NULL,
+    outcome_data_available INTEGER NOT NULL,
+    resulting_experiment_id TEXT,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_research_decisions_design_group
+    ON research_decisions (design_group_id, created_at);
+
+-- research_conclusions: one row per conclusion recorded against an
+-- experiment. APPEND-ONLY (same reasoning as research_decisions
+-- above) -- an experiment gains a NEW conclusion over time rather than
+-- an edited one; the newest row by created_at is "current" by
+-- convention, no separate is_current flag needed. Every references_*
+-- column plus limitations is NOT NULL -- app/models/research_notebook.py's
+-- own field validators refuse to construct a ConclusionCreateRequest
+-- with any of them blank, so this table can never hold a conclusion
+-- that skipped stating what it's based on.
+CREATE TABLE IF NOT EXISTS research_conclusions (
+    id TEXT PRIMARY KEY,
+    experiment_id TEXT NOT NULL,
+    state TEXT NOT NULL,
+    statement TEXT NOT NULL,
+    references_hypothesis TEXT NOT NULL,
+    references_sample TEXT NOT NULL,
+    references_baseline TEXT NOT NULL,
+    references_outcomes TEXT NOT NULL,
+    references_statistical_validation TEXT NOT NULL,
+    limitations TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_research_conclusions_experiment
+    ON research_conclusions (experiment_id, created_at);
 """
 
 # v0.1.18: columns added to an already-shipped table, so CREATE TABLE IF
@@ -679,6 +781,25 @@ _EXPERIMENTS_MIGRATIONS: list[tuple[str, str]] = [
 # time anyone re-runs that experiment anyway).
 _EXPERIMENT_EVENTS_MIGRATIONS: list[tuple[str, str]] = [
     ("condition_values_json", "ALTER TABLE experiment_events ADD COLUMN condition_values_json TEXT"),
+]
+
+# Research Notebook v1: nine additive, nullable columns on the existing
+# `experiments` table (structured-hypothesis fields + versioning links
+# -- see app/models/research.py::ExperimentCreateRequest's own
+# docstring for the full list and why each lives here rather than a
+# parallel table). Every one is NULL on an existing pre-Research-
+# Notebook row and stays NULL until explicitly set at creation time --
+# same additive-only pattern as every migration list above.
+_EXPERIMENTS_NOTEBOOK_MIGRATIONS: list[tuple[str, str]] = [
+    ("expected_direction", "ALTER TABLE experiments ADD COLUMN expected_direction TEXT"),
+    ("expected_behavior", "ALTER TABLE experiments ADD COLUMN expected_behavior TEXT"),
+    ("rationale", "ALTER TABLE experiments ADD COLUMN rationale TEXT"),
+    ("invalidation_criteria", "ALTER TABLE experiments ADD COLUMN invalidation_criteria TEXT"),
+    ("originating_observation_id", "ALTER TABLE experiments ADD COLUMN originating_observation_id TEXT"),
+    ("design_group_id", "ALTER TABLE experiments ADD COLUMN design_group_id TEXT"),
+    ("candidate_label", "ALTER TABLE experiments ADD COLUMN candidate_label TEXT"),
+    ("parent_experiment_id", "ALTER TABLE experiments ADD COLUMN parent_experiment_id TEXT"),
+    ("version_label", "ALTER TABLE experiments ADD COLUMN version_label TEXT"),
 ]
 
 
@@ -838,6 +959,7 @@ def _migrate(conn: sqlite3.Connection) -> None:
     _migrate_table(conn, "experiment_events", _EXPERIMENT_EVENTS_MIGRATIONS)
     _migrate_legacy_experiment_conditions(conn)
     _drop_legacy_not_null_columns(conn)
+    _migrate_table(conn, "experiments", _EXPERIMENTS_NOTEBOOK_MIGRATIONS)
     conn.commit()
 
 

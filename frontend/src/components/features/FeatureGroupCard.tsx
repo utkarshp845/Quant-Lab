@@ -6,6 +6,12 @@ export interface FeatureField {
   label: string;
   value: number | null;
   format: FeatureFieldFormat;
+  /** The canonical feature_id (app/features/vocabulary.py) this field
+   * mirrors -- optional (Market Context's None-symbol case has no
+   * fields at all); when present, enables the RESEARCH column (spec
+   * section 13: "whether usable by Research, experiments currently
+   * using it") and the "Use this feature in Research" action. */
+  featureId?: string;
 }
 
 function formatFeatureValue(value: number | null, format: FeatureFieldFormat): string {
@@ -24,24 +30,43 @@ export function FeatureGroupCard({
   title,
   subtitle,
   fields,
+  experimentsUsingFeature,
+  onUseInResearch,
 }: {
   title: string;
   subtitle?: string;
   fields: FeatureField[];
+  /** feature_id -> count of experiments referencing it (spec section
+   * 13's RESEARCH column) -- omitted fields default to 0/unused. */
+  experimentsUsingFeature?: Record<string, number>;
+  onUseInResearch?: (featureId: string) => void;
 }) {
   return (
     <section className="section feature-group-card">
       <h3 className="section-title">{title}</h3>
       {subtitle && <p className="section-subtitle">{subtitle}</p>}
       <dl className="feature-group-grid">
-        {fields.map((field) => (
-          <div className="feature-group-row" key={field.label}>
-            <dt>{field.label}</dt>
-            <dd className={field.value === null ? "feature-value-null" : undefined}>
-              {formatFeatureValue(field.value, field.format)}
-            </dd>
-          </div>
-        ))}
+        {fields.map((field) => {
+          const usageCount = field.featureId ? (experimentsUsingFeature?.[field.featureId] ?? 0) : null;
+          return (
+            <div className="feature-group-row" key={field.label}>
+              <dt>{field.label}</dt>
+              <dd className={field.value === null ? "feature-value-null" : undefined}>
+                {formatFeatureValue(field.value, field.format)}
+              </dd>
+              {field.featureId && onUseInResearch && (
+                <dd className="feature-group-research-cell">
+                  {usageCount !== null && usageCount > 0 && (
+                    <span className="feature-group-usage-badge">used by {usageCount}</span>
+                  )}
+                  <button type="button" className="feature-group-use-btn" onClick={() => onUseInResearch(field.featureId!)}>
+                    Use in Research
+                  </button>
+                </dd>
+              )}
+            </div>
+          );
+        })}
       </dl>
     </section>
   );
